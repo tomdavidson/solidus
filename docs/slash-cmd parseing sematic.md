@@ -1,215 +1,233 @@
-<img src="https://r2cdn.perplexity.ai/pplx-full-logo-primary-dark%402x.png" style="height:64px;margin-right:32px"/>
+## 1. Input model and line normalization
 
-# can you write a spec that use the parseing sematics and and the implemationstion's output's jsonschema?
+- The parser consumes a single text input as a byte/char stream.  
+- It treats certain characters as **line terminators** in the input stream, distinct from literal `\n` characters that might appear inside string data.
 
-Yes. Here’s a compact spec that combines the parsing semantics with the JSON Schema for the output.
+### 1.1 Line ending normalization
 
-## 1. Overview
+Before any parsing:
 
-This document specifies:
+- Replace all `"\r\n"` with `"\n"`.  
+- Replace all remaining `"\r"` with `"\n"`.
 
-1. A line-oriented **slash-command language** for embedding commands in text.
-2. The **JSON output format** produced by a conforming parser, including a JSON Schema.
+After normalization:
 
-The language is designed to:
+- `CRLF`, `LF`, and bare `CR` are all treated equivalently as a single `LF`.  
+- The parser then **iterates over the input using these `\n` characters as separators** to obtain lines. Conceptually:
 
-- Support multiple `/commands` in a single text payload.
-- Allow single-line arguments, multi-line arguments with continuation, and fenced blocks.
-- Preserve enough structure and context to map commands to MCP/tool calls.
+  - Each `\n` in the normalized input terminates a line.  
+  - The `\n` itself is not part of the line’s content.  
+  - A final `\n` at the end of input produces a trailing empty line.
 
-***
+- Literal `\n` sequences that appear inside line content (for example in JSON strings like `"blah\\nblah"`) are **not** treated as line terminators. They are ordinary characters and are preserved verbatim in the payload.
 
-## 2. Parsing semantics
+Result: the parser operates on a sequence of logical lines (possibly including blank lines) derived solely from the normalized line terminators.
 
-### 2.1 Input model
-
-- Input is a sequence of lines, each terminated by `\n`.
-- The newline is not part of the line’s content.
-
-
-### 2.2 Command detection
+## 2. Command detection
 
 A **command line** is any line whose first non-whitespace character is `/`.
 
 Command line structure:
 
-```
+```text
 /<command-name>[<whitespace><arguments-prefix>]
 ```
 
 - `<command-name>`:
-    - Regex: `[a-z][a-z0-9-]*`
-    - Ends at the first whitespace or end-of-line.
-- `<arguments-prefix>`:
-    - Optional.
-    - Everything after the first whitespace following `<command-name>`.
-    - May contain:
-        - Inline arguments.
-        - An inline fence opener (```lang).
+  - Regex: `[a-z][a-z0-9-]*`.  
+  - Starts immediately after the leading `/`.  
+  - Ends at the first whitespace or end-of-line.
+- `<arguments-prefix>` (optional):
+  - Everything after the first whitespace following `<command-name>`.  
+  - May contain:
+    - Inline arguments.  
+    - An inline fence opener (```lang).
 
-Any line that does not begin (after leading whitespace) with `/` is a **non-command line**.
+Any line that does **not** begin (after leading whitespace) with `/` is a **non-command line**.
 
-### 2.3 States
+## 3. Parser state machine
 
-The parser is a line-based state machine with three states:
+The parser is line-based and uses three primary states:
 
-- `idle` – not currently accumulating a command.
-- `accumulating` – accumulating arguments for a command outside of a fence.
-- `inFence` – collecting raw lines inside a fenced block attached to a command.
+- `idle` – not currently accumulating a command.  
+- `accumulating` – collecting continuation-mode arguments for a command.  
+- `inFence` – collecting raw lines inside a fenced block for a command.
 
-The parser also tracks:
+For the **current command**, the parser tracks:
 
-- The current command’s `name`.
-- The header portion after the command name, `arguments.header`.
-- The accumulated `arguments.payload`.
-- Fence metadata when in `inFence` (fence marker and optional language).
+- `name`: the command name from the first line.  
+- `arguments.header`: the header text after the command name on the first line, **before** any fence opener.  
+- `arguments.mode`: one of `"single-line"`, `"continuation"`, or `"fence"`.  
+- `arguments.fence_lang`: optional language identifier when in fence mode.  
+- `arguments.payload`: the assembled argument string, with `\n` between logical payload lines.
 
-***
+## 4. Argument modes
 
-## 3. Argument modes
-
-### 3.1 Single-line arguments
+### 4.1 Single-line mode
 
 If a command line:
 
-- Does not end with a continuation marker, and
-- Does not contain a fence opener,
+- Does **not** end with a continuation marker (see 4.2), and  
+- Does **not** contain a fence opener,
 
-then the text after `<command-name>` (trimmed of leading whitespace once) is the **entire** argument string, and the command is finalized on that line.
+then:
 
-Example:
+- The text after `<command-name>` (trimmed once for the initial space) is the entire argument.  
+- The command is finalized on that line.
 
+Properties:
+
+- `arguments.mode = "single-line"`.  
+- `arguments.payload` is exactly that argument string (the parser does not append a newline simply for being the last argument).
+
+### 4.2 Continuation mode (explicit `" /"` marker)
+
+
+
+Lines that end with " /" are continuation markers and contribute payload lines as described.
+
+Lines that are completely empty end the command.
+
+Lines whose first non-whitespace is / but do not form a valid command name are treated as literal payload lines.
+
+Lines that form a valid new command name are out of scope for this command (you can either treat them as payload or define that they end the current command; your current implementation treats the invalid / as payload).
+
+
+
+Continuation is **opt-in** and **strict**.
+
+#### 4.2.1 Continuation marker definition
+
+- A **continuation marker** is defined as a line (after normalization) whose content ends with a **space + slash** (`" /"`) immediately before the line terminator, with nothing after that slash.  
+- Optional leading whitespace is allowed. For example, `"/echo  /"` or `"   /"` (space+slash with indentation) both qualify as continuation markers.
+
+Formally, a line is a continuation marker if it matches:
+
+- `^[ \t]*.*[ ]/[ ]*$` and the last two non-newline characters are `" /"`.
+
+A special case of this is a line that, aside from leading whitespace, is exactly `" /"`; this represents a **blank payload line** in continuation mode.
+
+#### 4.2.2 First command line with continuation
+
+For a command’s first line:
+
+- If it ends with `" /"` (continuation marker):
+  - The parser **strips** the final `" /"` from that line’s content.  
+  - The remaining content (which might be empty after the header) is appended to `arguments.payload`, followed by `"\n"` if you treat it as part of the payload body.  
+  - `arguments.mode` is set to `"continuation"`.  
+  - The parser moves to `accumulating`.
+
+- If it does **not** end with `" /"` and has no fence opener:
+  - The parser treats the command as a single-line command (4.1).
+
+#### 4.2.3 Lines in `accumulating` state
+
+In `accumulating`, for each subsequent line:
+
+Let `line` be the current line content (without the trailing `\n`):
+
+- **Continuation marker line** (matches the pattern, ends in `" /"` with no content after it):
+  - This represents a **blank payload line**.
+  - The parser appends `"\n"` to `arguments.payload`.  
+  - The parser remains in `accumulating`.
+
+- **Empty line** (`line == ""` after normalization):
+  - This is a **true blank line** with no continuation marker.  
+  - The parser **finalizes the command** and transitions to `idle`.  
+  - This blank line is **not** appended to `arguments.payload`.  
+  - Subsequent lines are parsed independently (either as text or new commands).
+
+- **Any other non-empty line** (not a marker):
+  - The parser appends `line + "\n"` to `arguments.payload`.  
+  - The parser remains in `accumulating`.
+
+#### 4.2.4 Bare slash is not continuation
+
+- A bare `/` at the end of a line (with no preceding space as `" /"`) is **not** a continuation marker.
+
+Behavior:
+
+- If the line’s first non-whitespace character is `/`, it is processed via command detection (either a new command or invalid command name).  
+- If the `/` appears elsewhere in the line, it is just part of the literal content.  
+- The parser does not introduce any special handling for this edge case; users are encouraged to use fenced blocks when they need more complex or ambiguous multi-line payloads.
+
+**Implication:** examples like:
+
+```text
+/echo / 
+ooga booga 
+/
+testing 123
 ```
-/mcp call_tool read_file {"path": "src/index.ts"}
-```
 
-- `name`: `"mcp"`
-- `arguments.header`: `"call_tool read_file {"path": "src/index.ts"}"`
-- `arguments.mode`: `"single-line"`
-- `arguments.payload`: `"call_tool read_file {"path": "src/index.ts"}"`
+do **not** cause `testing 123` to be included in `/echo`’s payload, because the line with just `/` is not a `" /"` marker and either starts a new command or is treated as content depending on position.
 
+### 4.3 Fenced block mode
 
-### 3.2 Continuation with `" /"` (space + slash)
+Fenced blocks allow attaching a raw, multi-line payload to a command, similar to markdown code fences.
 
-A line may explicitly continue its arguments onto the next line by ending with:
+#### 4.3.1 Fence openers
 
-- A **space** followed by a slash (`" /"`) immediately before the newline.
-
-Continuation rules (in `accumulating` state or for the first command line):
-
-- If the line ends with `" /"`:
-    - Strip the final `" /"` from the line content.
-    - Append the remaining content plus a newline `\n` to the current command’s `arguments.payload`.
-    - Stay in `accumulating` state; the next line is part of the same command.
-- If the line does **not** end with `" /"` and is not starting a fence:
-    - Append the full line content (without the newline) and then append `\n`.
-    - Finalize the command.
-    - Return to `idle`.
-
-This preserves newlines in the payload and avoids accidental continuation when a line ends in a slash that is part of data (since there is no preceding space).
-
-Example:
-
-```
-/mcp call_tool read_file / 
-{"path": "src/index.ts"}
-```
-
-Payload:
-
-```
-call_tool read_file 
-{"path": "src/index.ts"}
-```
-
-`arguments.mode = "continuation"`.
-
-### 3.3 Fenced block arguments
-
-Fenced blocks allow attaching a raw multi-line payload to a command. They follow markdown code-fence semantics.
-
-#### 3.3.1 Fence opener forms
-
-There are two valid ways to enter fence mode:
+Two ways to enter fence mode:
 
 1. **Inline fence on the command line**
 
-```text
-/<command-name> <arguments-prefix> ```[lang]
-```
+   ```text
+   /<command-name> <arguments-prefix> ```[lang]
+   ```
 
-    - The first occurrence of three or more consecutive backticks (```…) in `<arguments-prefix>` is treated as the fence opener.
-    - Any text before the opener remains in `arguments.header`.
-    - The parser records the fence marker length and optional language (e.g., `jsonl`) and enters `inFence` state.
+   - In `<arguments-prefix>`, the first occurrence of three or more consecutive backticks (```…) is treated as the fence opener.
+   - Text before the opener is kept in `arguments.header`.  
+   - The parser records:
+     - Fence marker length (number of backticks).  
+     - Optional language identifier (e.g., `jsonl`).
+   - The parser enters `inFence` state.
+
 2. **Fence on the next line after continuation**
 
-```text
-/<command-name> <arguments-prefix> / 
-```[lang]
-<payload>
-```
+   ```text
+   /<command-name> <arguments-prefix> / 
+   ```[lang]
+   <payload>
+   ```
+   ```
 
-```
+   - First line ends with `" /"` → command enters `continuation` mode, but the next line is recognized as a fence opener.  
+   - The parser transitions to `inFence` for this command.  
+   - Subsequent lines until the fence close are payload lines for this command.
 
-- The command line ends with `" /"`, so the parser starts `accumulating` and preserves a newline.
-- The next line is a fence opener (```[lang]); the parser switches into `inFence` state.
-- All subsequent lines until the closing fence are payload.
-
-```
-
-
-#### 3.3.2 Fence mode semantics
+#### 4.3.2 Fence mode semantics
 
 While in `inFence`:
 
-- The parser ignores continuation markers (`" /"`); they are treated as part of the content.
-- It collects lines verbatim, appending `\n` after each.
-- It looks for a line that consists of the same number of backticks as the opener (e.g., ```), optionally surrounded by whitespace, with no other non-backtick characters [][].
-- That closing fence line is not included in the payload.
-- When the closing fence is found:
-    - The command is finalized.
-    - `arguments.mode` is `"fence"`.
-    - `arguments.fence_lang` is set to the captured language identifier or `null`.
-    - The parser returns to `idle`.
+- All lines (including blank lines) are appended to `arguments.payload` with `"\n"` separators.  
+- Continuation markers (`" /"`) inside a fence are ignored as syntax and treated as literal content.  
+- The parser looks for a **closing fence**:
 
-Example (inline opener):
+  - After trimming leading/trailing whitespace, a line is a closing fence if:
+    - It consists solely of backticks.  
+    - The number of backticks is **greater than or equal** to the opener’s count.
 
-```text
-/mcp call_tool write_file ```jsonl
-{"type": "function_call_start", "name": "call_tool_read", "call_id": 1}
-{"type": "parameter", "key": "name", "value": "server:tool_name"}
-```
+- The closing fence line itself is **not** appended to `arguments.payload`.  
+- Once the closing fence is found:
+  - `arguments.mode = "fence"`.  
+  - `arguments.fence_lang` is the captured language (`lang`) or `null`.  
+  - The command is finalized, and the parser transitions back to `idle`.
 
-```
+## 5. Multiple commands and text blocks
 
-Payload:
+- The parser walks the normalized input line by line.  
+- In `idle`, when it encounters a command line, it starts a new command according to the rules above.  
+- After a command is finalized (single-line, continuation termination, or fence close), the parser returns to `idle` and continues scanning for the next command.  
+- Non-command text segments between commands can optionally be represented as `text_blocks`:
 
-```text
-{"type": "function_call_start", "name": "call_tool_read", "call_id": 1}
-{"type": "parameter", "key": "name", "value": "server:tool_name"}
-```
+  - Each `text_block` has:
+    - `range.start_line`, `range.end_line` (inclusive, zero-based or one-based by convention).  
+    - `content`: the exact text for that block, with internal `\n` separators reflecting the normalized input.
 
-`arguments.mode = "fence"`, `arguments.fence_lang = "jsonl"`.
+## 6. JSON output schematics (summary)
 
----
-
-## 4. Multiple commands in one payload
-
-The parser:
-
-- Scans line by line.
-- Whenever it sees a new command line in `idle`, it starts a new command.
-- After a command is finalized, it returns to `idle` and continues scanning for the next command.
-
-Non-command text between commands can optionally be returned as `text_blocks`.
-
----
-
-## 5. JSON output format
-
-### 5.1 Top-level JSON
-
-A parser run over a single input payload produces a JSON object:
+A parser run produces a JSON object:
 
 ```json
 {
@@ -224,15 +242,9 @@ A parser run over a single input payload produces a JSON object:
   "commands": [ /* Command[] */ ],
   "text_blocks": [ /* TextBlock[] */ ]
 }
-```
+```[]
 
-- `version`: schema/protocol version.
-- `context`: arbitrary metadata about where/how the text was obtained.
-- `commands`: ordered list of parsed commands.
-- `text_blocks`: optional list of non-command spans.
-
-
-### 5.2 Command object
+### 6.1 Command
 
 Each `commands[i]` is:
 
@@ -253,25 +265,22 @@ Each `commands[i]` is:
   },
   "children": []
 }
-```
+```[]
 
-- `id`: unique identifier for the command instance.
-- `name`: the command name after the leading `/` (e.g., `"mcp"`).
-- `raw`: the exact text span (from input) for this command, including its header and argument lines.
-- `range.start_line` / `range.end_line`: zero- or one-based line indices (convention is implementation-defined; schema only constrains them as integers).
-- `arguments.header`: whatever followed the command name on the header line, before any fence opener.
-- `arguments.mode`: one of:
-    - `"single-line"`
-    - `"continuation"`
-    - `"fence"`
-- `arguments.fence_lang`: language tag from the fence opener (e.g., `"jsonl"`), or `null`.
-- `arguments.payload`: final assembled argument string, with newlines preserved.
-- `children`: reserved for future hierarchical command structures (may be an empty array).
+- `id`: unique identifier for this command instance.  
+- `name`: command name (without the leading `/`).  
+- `raw`: exact source slice for this command (header + argument lines).  
+- `range`: inclusive line range that the command covers.  
+- `arguments`:
+  - `header`: header arguments from the command line before any fence opener.  
+  - `mode`: `"single-line" | "continuation" | "fence"`.  
+  - `fence_lang`: language tag or `null`.  
+  - `payload`: final assembled argument string with `\n` between logical payload lines.  
+- `children`: reserved for future hierarchical structures (may be empty).
 
+### 6.2 TextBlock
 
-### 5.3 TextBlock object
-
-Optional representation of non-command text regions:
+Each `text_blocks[i]` is:
 
 ```json
 {
@@ -283,163 +292,3 @@ Optional representation of non-command text regions:
   "content": "arbitrary text\n..."
 }
 ```
-
-
----
-
-## 6. JSON Schema
-
-A formal JSON Schema for the parser output:
-
-```json
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.com/schemas/slash-commands-output.json",
-  "title": "Slash Command Parser Output",
-  "type": "object",
-  "required": ["version", "context", "commands"],
-  "properties": {
-    "version": {
-      "type": "string",
-      "description": "Output schema/protocol version."
-    },
-    "context": {
-      "type": "object",
-      "description": "Metadata for the parsed payload.",
-      "required": ["source"],
-      "properties": {
-        "source": {
-          "type": "string",
-          "description": "Identifier for the source (file path, URI, etc.)."
-        },
-        "timestamp": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "user": {
-          "type": "string"
-        },
-        "session_id": {
-          "type": "string"
-        },
-        "extra": {
-          "type": "object",
-          "description": "Arbitrary additional context.",
-          "additionalProperties": true
-        }
-      },
-      "additionalProperties": true
-    },
-    "commands": {
-      "type": "array",
-      "description": "List of parsed slash commands in order of appearance.",
-      "items": {
-        "$ref": "#/$defs/command"
-      }
-    },
-    "text_blocks": {
-      "type": "array",
-      "description": "Optional non-command text spans between commands.",
-      "items": {
-        "$ref": "#/$defs/textBlock"
-      }
-    }
-  },
-  "$defs": {
-    "range": {
-      "type": "object",
-      "required": ["start_line", "end_line"],
-      "properties": {
-        "start_line": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "end_line": {
-          "type": "integer",
-          "minimum": 0
-        }
-      },
-      "description": "Inclusive line range for a command or text block."
-    },
-    "arguments": {
-      "type": "object",
-      "required": ["mode", "payload"],
-      "properties": {
-        "header": {
-          "type": "string",
-          "description": "Header arguments present on the command line before any fence."
-        },
-        "mode": {
-          "type": "string",
-          "enum": ["single-line", "continuation", "fence"],
-          "description": "How the payload was assembled."
-        },
-        "fence_lang": {
-          "type": ["string", "null"],
-          "description": "Fence language identifier if a fenced block was used."
-        },
-        "payload": {
-          "type": "string",
-          "description": "Final assembled argument string with newlines preserved."
-        }
-      },
-      "additionalProperties": false
-    },
-    "command": {
-      "type": "object",
-      "required": ["id", "name", "range", "arguments"],
-      "properties": {
-        "id": {
-          "type": "string",
-          "description": "Unique identifier for this command instance."
-        },
-        "name": {
-          "type": "string",
-          "description": "Command name, extracted after the leading slash."
-        },
-        "raw": {
-          "type": "string",
-          "description": "Original text span (header + arguments) for this command."
-        },
-        "range": {
-          "$ref": "#/$defs/range"
-        },
-        "arguments": {
-          "$ref": "#/$defs/arguments"
-        },
-        "children": {
-          "type": "array",
-          "description": "Nested commands if supported by the implementation.",
-          "items": {
-            "$ref": "#/$defs/command"
-          }
-        }
-      },
-      "additionalProperties": false
-    },
-    "textBlock": {
-      "type": "object",
-      "required": ["id", "range", "content"],
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "range": {
-          "$ref": "#/$defs/range"
-        },
-        "content": {
-          "type": "string",
-          "description": "Raw text content between commands."
-        }
-      },
-      "additionalProperties": false
-    }
-  },
-  "additionalProperties": false
-}
-```
-
-This ties the parsing semantics directly to a concrete, machine-checkable output format. You can evolve `version` and `context.extra` without breaking consumers, and your MCP/tool layer can safely consume `commands[*].arguments` knowing how they were assembled.
-
-Would you like a minimal TypeScript `parseSlashCommands(text: string)` stub that returns an object conforming to this schema?
-

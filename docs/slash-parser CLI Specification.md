@@ -1,25 +1,24 @@
 <img src="https://r2cdn.perplexity.ai/pplx-full-logo-primary-dark%402x.png" style="height:64px;margin-right:32px"/>
 
-## `slash-parse` CLI Specification
+## `riff` CLI Specification
 
 ### 1. Overview
 
-`slash-parse` is a command-line tool that parses text containing slash commands and emits structured JSON. It is built in Rust, with the core parsing logic in `src/lib.rs` (shared with the WebAssembly target) and the CLI wrapper in `src/main.rs`.
+`riff` is a command-line tool that parses text containing slash commands and emits structured JSON. It is built in Rust, with the core parsing logic in `src/lib.rs` (shared with the WebAssembly target) and the CLI wrapper in `src/main.rs`.
 
-The CLI follows UNIX conventions: it reads from files or stdin, writes JSON to stdout, and reports errors to stderr.
+The CLI follows UNIX conventions: it reads from files or stdin, writes JSON/JSONL to stdout, and reports errors to stderr.
 
 ### 2. Installation and Build
 
 ```bash
-cargo build --release
+
 ```
 
-The binary is `target/release/slash-parse`.
 
 ### 3. Usage
 
 ```text
-Usage: slash-parse [OPTIONS] [FILES]...
+Usage: riff [OPTIONS] [FILES]...
 
 Arguments:
   [FILES]...  One or more input files to parse. If omitted or '-', reads from stdin.
@@ -36,77 +35,56 @@ Options:
 
 #### 4.1 File Inputs
 
-The CLI accepts zero or more positional file arguments.
+The CLI accepts zero or one positional file arguments supporting globs/wildcard matching.
 
 ```bash
-slash-parse ./prompt.md
-slash-parse ./prompt1.md ./prompt2.md ./prompts/draft.md
+riff ./prompt.md
+riff prompt-*.{txt,md} > output.json
 ```
 
-Each file is parsed independently. The parser automatically sets `context.source` to the file path for each file.
+There are cli crates that can be used for the wilidcared matchign and loading multiple files.
+
 
 #### 4.2 Stdin
 
 If no file arguments are provided, or if a file argument is literally `"-"`, the CLI reads from stdin.
 
 ```bash
-cat prompts/*.md | slash-parse
-echo "/help" | slash-parse
-slash-parse - < prompt.md
+cat prompts/*.md | riff 
+echo "/help" | riff
+riff - < prompt.md
 ```
-
-When reading from stdin, `context.source` is set to `"stdin"`.
-
-#### 4.3 Mixed
-
-File arguments and stdin can be mixed. A `-` in the file list represents stdin at that position.
-
-```bash
-slash-parse ./header.md - ./footer.md < body.md
-```
-
-This parses `header.md`, then stdin, then `footer.md`, in order.
 
 ### 5. Output
 
 #### 5.1 Default: JSONL (one result per line)
 
-By default, each parsed input produces one compact JSON object on its own line:
+By default, each parsed command produces one compact JSON object on its own line:
 
 ```bash
-slash-parse ./a.md ./b.md
+riff mesg.txt > output.jsonl
 ```
-
-```jsonl
-{"version":"0.1.0","context":{"source":"./a.md"},"commands":[...],"text_blocks":[...]}
-{"version":"0.1.0","context":{"source":"./b.md"},"commands":[...],"text_blocks":[...]}
-```
-
-This is ideal for piping into `jq`, `grep`, or other line-oriented tools.
 
 #### 5.2 Pretty: JSON Array
 
 With `-p` or `--pretty`, the output is a single formatted JSON array containing all results:
 
 ```bash
-slash-parse -p ./a.md ./b.md
+cat *.md | riff -p 
+riff mesg-*.txt -p
 ```
 
 ```json
 [
   {
     "version": "0.1.0",
-    "context": {
-      "source": "./a.md"
-    },
+    "context": {},
     "commands": [...],
     "text_blocks": [...]
   },
   {
     "version": "0.1.0",
-    "context": {
-      "source": "./b.md"
-    },
+    "context": {},
     "commands": [...],
     "text_blocks": [...]
   }
@@ -117,19 +95,18 @@ If there is only one input, `--pretty` still wraps it in an array for consistenc
 
 ### 6. Context Injection (`-c`, `--context`)
 
-The `-c` flag is repeatable. Each occurrence provides additional context that is merged into the output's `context` object.
+The `-c` flag is repeatable. Each occurrence provides additional context that is merged into the output's `context` object. 
+The value maybe a string or a file path.
 
 ```bash
-slash-parse -c '{"user":"tom"}' -c env=prod ./prompt.md
+riff -c env=prod -c ../even-more-context-*.json .-c /prompt.md
 ```
-
 
 #### 6.1 Merge Order
 
 1. Start with an empty JSON object `{}`.
 2. Process each `-c` value in the order provided, left to right.
 3. Later values overwrite earlier values for the same key (shallow merge).
-4. For file inputs, `context.source` is set to the filename after all `-c` merges. This means the filename always wins over a `source` key provided via `-c`.
 
 #### 6.2 Detection Logic
 
@@ -137,13 +114,13 @@ For each `-c <VALUE>`, the CLI determines the format using this precedence:
 
 1. **File path:** If `<VALUE>` exists as a file on disk, read the file and parse based on extension:
 
+- `.json` 
+- `.toml` 
+- `.yaml/yml` 
+- `.env/txt`
 
-| Extension | Parser |
-| :-- | :-- |
-| `.json` | JSON (`serde_json`) |
-| `.toml` | TOML (`toml` crate) |
-| `.env` | Line-by-line `key=value` (see 6.3) |
-| Other/none | Line-by-line `key=value` |
+There is bound to be a good libray choice to support this functionality accross OS platforms and formats.
+
 
 2. **Inline JSON:** If `<VALUE>` starts with `{`, parse as a JSON object.
 3. **Inline key=value:** If `<VALUE>` contains `=`, split on the first `=`. Left side is the key, right side is the value (string).
@@ -162,10 +139,10 @@ Examples:
 
 ```bash
 # Inline
-slash-parse -c user=tom -c env=prod ./prompt.md
+riff -c user=tom -c env=prod ./prompt.md
 
 # From a .env file
-slash-parse -c ./config.env ./prompt.md
+riff -c ./config.env ./prompt.md
 ```
 
 Where `config.env` contains:
@@ -188,7 +165,7 @@ The merged JSON object is mapped to the `ParserContext` struct:
 Example:
 
 ```bash
-slash-parse -c '{"user":"tom","pipeline_id":"42"}' ./prompt.md
+riff -c '{"user":"tom","pipeline_id":"42"}' ./prompt.md
 ```
 
 Produces:
@@ -228,51 +205,51 @@ Produces:
 
 | Crate | Purpose |
 | :-- | :-- |
-| `clap` (v4, `derive` feature) | CLI argument parsing |
-| `serde` + `serde_json` | JSON serialization/deserialization |
-| `toml` | TOML context file support |
 
-The core parser in `src/lib.rs` depends only on `serde` and `serde_json`. The `clap` and `toml` crates are CLI-only dependencies.
 
 ### 10. Project Structure
-
-```
-slash-parse/
-  Cargo.toml
-  src/
-    lib.rs          # Core parser + data models + WASM bindings
-    main.rs         # CLI wrapper (clap, file I/O, context merging)
-```
-
-`lib.rs` is compiled as both:
-
-- A `cdylib` target (for `wasm-pack` / WebAssembly).
-- A `lib` target consumed by `main.rs`.
-
-`Cargo.toml` should define:
-
-```toml
-[lib]
-crate-type = ["cdylib", "rlib"]
-```
-
 
 ### 11. Example Session
 
 ```bash
 # Single file, default output
-slash-parse ./prompt.md
+riff ./prompt.md
 
 # Multiple files with context
-slash-parse -c user=tom -c ./project.toml ./prompts/a.md ./prompts/b.md
+riff -c user=tom -c ./project.toml ./prompts/a.md ./prompts/b.md
 
 # Stdin pipeline
-cat ./prompts/*.md | slash-parse -c env=ci
+cat ./prompts/*.md | riff -c env=ci
 
 # Pretty output with inline JSON context
-slash-parse -p -c '{"user":"tom","run_id":"abc-123"}' ./prompt.md
+riff -p -c '{"user":"tom","run_id":"abc-123"}' ./prompt.md
 
 # Context from multiple sources merged together
-slash-parse -c ./defaults.json -c ./overrides.env -c debug=true ./prompt.md
+riff -c ./defaults.json -c ./overrides.env -c debug=true ./prompt.md
 ```
 
+
+
+parser/              core    Rust library, internal to repo, not published
+wasm-js/             wasm    wasm-bindgen module for JS/TS runtimes
+wasm-wasi/           wasm    WASI module for polyglot SDK consumption
+slash-js-web/        sdk     Browser runtime SDK (depends on wasm-js)
+slash-js-bundle/     sdk     ESM server-side SDK (depends on wasm-js)
+slash-py/            sdk     Python SDK (depends on wasm-wasi)
+slash-ruby/          sdk     Ruby SDK (depends on wasm-wasi)
+slash-php/           sdk     PHP SDK (depends on wasm-wasi)
+slash-elixir/        sdk     Elixir SDK (depends on wasm-wasi)
+slash-ocaml/         sdk     OCaml SDK (depends on wasm-wasi)
+slash-haskell/       sdk     Haskell SDK (depends on wasm-wasi)
+slash-dart/          sdk     Dart SDK (depends on wasm-wasi)
+slash-java/          sdk     Java SDK (depends on wasm-wasi)
+slash-go/            sdk     Go SDK (depends on wasm-wasi)
+slash-zig/           sdk     Zig SDK (native FFI or wasm-wasi)
+slash-rs/            sdk     Rust SDK, thin published crate wrapping parser
+riff/                cli     CLI binary (depends on slash-rs)
+riff-deb/            pkg     Debian package
+riff-rpm/            pkg     RPM package
+riff-oci/            pkg     OCI container image
+riff-proto/          pkg     Proto toolchain plugin
+website/             docs    Static site for documentation and promotion
+docs/                docs    ADRs and formal spec (bundled into website)
