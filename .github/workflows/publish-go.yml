@@ -1,4 +1,4 @@
-# NOTE: Hand-authored. TODO: Generate from Moon Tera templates (.moon/templates/publish-workflows/)
+# .github/workflows/publish-go.yml
 name: Validate slash-go
 
 on:
@@ -7,15 +7,8 @@ on:
 
 jobs:
   validate:
-    if: startsWith(github.event.release.tag_name, 'slash-go/')
-    runs-on: ubuntu-latest
-    environment: publish
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: moonrepo/setup-toolchain@v0
-        with:
-          auto-install: true
-
-      - name: Validate Go module
-        run: moon run slash-go:build
+    uses: ./.github/workflows/publish-to-registry.yml
+    with:
+      tag-prefix: "slash-go/"
+      moon-task: "slash-go:test"
+    secrets: inherit

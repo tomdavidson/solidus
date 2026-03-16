@@ -1,79 +1,64 @@
-name: Review Artifacts
+# .github/workflows/review.yml
+name: Review
 
 on:
   workflow_dispatch:
     inputs:
-      pr_number:
+      pr-number:
         description: "PR number to build review artifacts for"
         required: true
 
-  pull_request:
-    types: [closed]
+permissions:
+  deployments: write
+  actions: write
+  contents: read
 
 jobs:
-  build-review-artifacts:
-    if: github.event_name == 'workflow_dispatch'
+  review:
     runs-on: ubuntu-latest
-    environment: review-pr-${{ github.event.inputs.pr_number }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: refs/pull/${{ github.event.inputs.pr_number }}/head
+          ref: refs/pull/${{ github.event.inputs.pr-number }}/head
+          fetch-depth: 0
 
-      - uses: moonrepo/setup-toolchain@v0
+      - uses: ./.github/actions/setup
         with:
-          auto-install: true
+          cache-cargo: "true"
+          cache-pnpm: "true"
 
-      - uses: mlugg/setup-zig@v1
-
-      - name: Install cargo-zigbuild
-        run: cargo install --locked cargo-zigbuild
-
-      - name: Install GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+      - uses: ./.github/actions/raa-open
+        id: raa
         with:
-          distribution: goreleaser
-          version: "~> v2"
-          install-only: true
+          pr-number: ${{ github.event.inputs.pr-number }}
+          type: "artifacts"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build riff snapshot
-        run: goreleaser release --config riff-cli/.goreleaser.yaml --snapshot --clean --skip=publish
-        continue-on-error: true
+        run: goreleaser release --config riff-cli/.goreleaser.yaml --snapshot --skip=publish
 
       - name: Build SDK snapshots
         run: |
-          moon run slash-rust:build || true
-          moon run slash-javascript:build || true
-          moon run slash-web:build || true
-          moon run slash-python:build || true
-          moon run wasm-javascript:build || true
-          moon run wasm-wasi:build || true
+          moon run slash-rust:build
+          moon run slash-javascript:build
+          moon run slash-web:build
+          moon run slash-python:build
 
-      - name: Upload review artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: review-pr-${{ github.event.inputs.pr_number }}
+          name: review-pr-${{ github.event.inputs.pr-number }}
           path: |
             riff-cli/dist/**
+            slash-rust/target/**
             slash-javascript/dist/**
             slash-web/dist/**
             slash-python/dist/**
-          retention-days: 14
 
-  cleanup:
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Mark review environment inactive
-        run: |
-          echo "Cleaning up review-pr-${{ github.event.pull_request.number }}"
-          # Mark deployment as inactive via GitHub API if one exists
-          DEPLOYMENTS=$(gh api repos/${{ github.repository }}/deployments \
-            --jq "[.[] | select(.environment == \"review-pr-${{ github.event.pull_request.number }}\")] | .[].id" 2>/dev/null || true)
-          for DEPLOY_ID in $DEPLOYMENTS; do
-            gh api repos/${{ github.repository }}/deployments/$DEPLOY_ID/statuses \
-              -f state=inactive \
-              -f description="PR closed" 2>/dev/null || true
-          done
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ./.github/actions/raa-close
+        if: always()
+        with:
+          pr-number: ${{ github.event.inputs.pr-number }}
+          deployment-id: ${{ steps.raa.outputs.deployment-id }}
+          status: ${{ job.status == 'success' && 'success' || 'failure' }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}

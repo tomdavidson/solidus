@@ -6,13 +6,7 @@
 #       task: ":lint"
 #       affected: "remote"
 #
-# Usage (affected against default branch):
-#   - uses: ./.github/actions/moon-run
-#     with:
-#       task: ":semgrep"
-#       affected: "true"
-#
-# Usage (no affected, run exactly this task):
+# Usage (no affected, exact task):
 #   - uses: ./.github/actions/moon-run
 #     with:
 #       task: "slash-rust:publish"

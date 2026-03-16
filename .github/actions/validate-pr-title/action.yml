@@ -12,7 +12,7 @@
 #       github-token: ${{ secrets.GITHUB_TOKEN }}
 #       extra-scopes: "infra,release"
 #
-# Scopes are auto-discovered from .moon/workspace.yml projects list.
+# Scopes auto-discovered from .moon/workspace.yml projects list.
 # deps, ci, repo are always included.
 
 name: "Validate PR Title"

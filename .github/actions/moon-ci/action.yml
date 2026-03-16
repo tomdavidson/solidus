@@ -9,7 +9,7 @@
 #       matrix-json: ${{ toJSON(matrix) }}
 
 name: "Moon CI"
-description: "Run moon ci with reporting and retrospect"
+description: "Run moon ci with sharding, reporting, and retrospect"
 
 inputs:
   job-index:

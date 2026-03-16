@@ -1,13 +1,27 @@
+# .github/actions/setup/action.yml
+#
+# Usage:
+#   - uses: ./.github/actions/setup
+#     with:
+#       cache-cargo: "true"
+#       cache-pnpm: "true"
+#
+# Usage (minimal, no project caches):
+#   - uses: ./.github/actions/setup
+
 name: "Slasher Setup"
-description: "Checkout, setup Moon/proto (lazy install), restore project caches"
+description: "Checkout, setup Moon/proto (lazy install), restore caches"
 
 inputs:
   fetch-depth:
     default: "0"
+    description: "Git fetch depth (0 for full history, needed for moon ci affected detection)"
   cache-cargo:
     default: "false"
+    description: "Restore Cargo registry, git, and target caches"
   cache-pnpm:
     default: "false"
+    description: "Restore pnpm store cache"
 
 runs:
   using: composite
@@ -19,7 +33,6 @@ runs:
     - uses: moonrepo/setup-toolchain@v0
       with:
         auto-install: true
-        # proto cache is handled internally by this action
 
     - uses: actions/cache@v4
       with:
