@@ -1,0 +1,82 @@
+name: PR Pipeline
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed, labeled]
+  workflow_dispatch:
+    inputs:
+      review-app:
+        description: Build and deploy review app artifacts
+        type: boolean
+        default: false
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    if: github.event.action != 'closed'
+    name: Moon CI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/moon-setup
+      - run: moon ci
+
+  codeql:
+    if: github.event.action != 'closed'
+    name: CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: ./.github/actions/moon-setup
+        with:
+          cache: "false"
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript,go
+      - uses: github/codeql-action/autobuild@v3
+      - uses: github/codeql-action/analyze@v3
+
+  pr-title:
+    if: github.event.action != 'closed'
+    name: PR Title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  review-open:
+    if: |
+      github.event.action != 'closed' && (
+        github.event.inputs.review-app == 'true' ||
+        contains(github.event.pull_request.labels.*.name, 'review-app')
+      )
+    name: Review App Deploy
+    needs: [ci]
+    runs-on: ubuntu-latest
+    permissions:
+      deployments: write
+      contents: write
+    steps:
+      - uses: ./.github/actions/moon-setup
+      - uses: ./.github/actions/raa-open
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  review-teardown:
+    if: github.event.action == 'closed'
+    name: Review App Teardown
+    runs-on: ubuntu-latest
+    permissions:
+      deployments: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/raa-teardown
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}

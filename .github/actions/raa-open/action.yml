@@ -1,0 +1,32 @@
+name: Review App Open
+description: Provision review environment and deploy snapshot artifacts
+
+inputs:
+  pr-number:
+    description: PR number
+    required: true
+  github-token:
+    description: GitHub token for deployments API
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: chrnorm/deployment-action@v2
+      id: deployment
+      with:
+        token: ${{ inputs.github-token }}
+        environment: review-pr-${{ inputs.pr-number }}
+        transient-environment: true
+        auto-inactive: false
+
+    - shell: bash
+      run: moon run :publish -- --snapshot
+      env:
+        REVIEW_PR: ${{ inputs.pr-number }}
+
+    - uses: chrnorm/deployment-status@v2
+      with:
+        token: ${{ inputs.github-token }}
+        deployment-id: ${{ steps.deployment.outputs.deployment_id }}
+        state: success
