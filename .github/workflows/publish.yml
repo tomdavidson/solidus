@@ -9,6 +9,7 @@ jobs:
     name: Publish Affected
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4 
       - uses: ./.github/actions/moon-setup
         with:
           go: "true"
