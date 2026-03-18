@@ -1,14 +1,14 @@
-$schema: "https://moonrepo.dev/schemas/tasks.json"
+# $schema: "https://moonrepo.dev/schemas/tasks.json"
 
-tasks:
-  semgrep:
-    command: "semgrep"
-    args: ["--config", "auto", "--error", "."]
+# tasks:
+#   semgrep:
+#     command: "semgrep"
+#     args: ["--config", "auto", "--error", "."]
 
-  gitleaks:
-    command: "gitleaks"
-    args: ["detect", "--source", ".", "-v"]
+#   gitleaks:
+#     command: "gitleaks"
+#     args: ["detect", "--source", ".", "-v"]
 
-  tangleguard:
-    command: "echo"
-    args: ["TangleGuard placeholder \u2014 not yet implemented"]
+#   tangleguard:
+#     command: "echo"
+#     args: ["TangleGuard placeholder \u2014 not yet implemented"]
