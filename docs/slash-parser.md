@@ -218,10 +218,7 @@ pub struct ParserContext {
     pub extra: Option<serde_json::Value>,
 }
 
-pub fn parse_slash_commands(
-    input: &str,
-    context: ParserContext,
-) -> Result<SlashParseResult, ParseError>;
+pub fn parse_slash_commands(input: &str, context: ParserContext) -> Result<SlashParseResult, ParseError>;
 ```
 
 - `ParseError` should include at least a message and optionally a line/column.
