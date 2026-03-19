@@ -3,8 +3,6 @@ id: "parser"
 language: "rust"
 tags: ["core"]
 
-
 workspace:
   inheritedTasks:
     include: []
-

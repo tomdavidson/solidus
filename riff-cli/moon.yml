@@ -1,6 +1,7 @@
 $schema: "https://moonrepo.dev/schemas/project.json"
 id: "riff-cli"
 language: "rust"
+
 tags: ["cli"]
 
 workspace:
@@ -39,3 +40,4 @@ workspace:
 #     # We don't depend on docker-login here, because snapshots don't push to GHCR!
 #     deps:
 #       - 'parser:build'
+
