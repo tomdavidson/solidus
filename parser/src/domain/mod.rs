@@ -1,9 +1,7 @@
 mod errors;
 mod types;
 
-pub use errors::ParseWarning;
+pub use errors::Warning;
 pub use types::{
-    ArgumentMode, Command, CommandArguments, LineRange, ParseResult, ParserContext, TextBlock,
+    ArgumentMode, Command, CommandArguments, LineRange, ParseResult, TextBlock, SPEC_VERSION,
 };
-
-pub use types::SPEC_VERSION;
