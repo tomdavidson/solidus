@@ -4,8 +4,6 @@ fileGroups:
   cargo:
     - "Cargo.toml"
     - "src/**/*"
-    - "/.cargo/config.toml"
-    - "/rust-toolchain.toml"
   sources: []
   tests:
     - "benches/**/*"
@@ -24,8 +22,6 @@ tasks:
       - "@group(sources)"
     env: &env
       CARGO_TERM_COLOR: "always"
-    outputs:
-      - "target/release/$project"
 
   build-release:
     <<: *build
@@ -78,13 +74,6 @@ tasks:
     inputs:
       - "@group(cargo)"
       - "@group(sources)"
-    env: *env
-
-  cargo-audit:
-    command: "cargo"
-    args: ["audit"]
-    inputs:
-      - "@group(cargo)"
     env: *env
 
   cargo-deny:
