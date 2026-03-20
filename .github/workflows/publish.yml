@@ -18,10 +18,10 @@ on:
         type: boolean
         default: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
-  # ---------------------------------------------------------
-  # 1. Routing Job: Determine Task & Environment
-  # ---------------------------------------------------------
   router:
     name: Determine Target
     runs-on: ubuntu-latest
