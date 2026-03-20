@@ -4,11 +4,11 @@ description: "Calculates optimal runner count from affected Moon tasks"
 inputs:
   tasks-per-runner:
     required: false
-    default: "3"
+    default: "10"
     description: "Number of affected tasks to assign per runner"
   max-parallel:
     required: false
-    default: "6"
+    default: "4"
     description: "Maximum number of concurrent runners"
 
 outputs:
