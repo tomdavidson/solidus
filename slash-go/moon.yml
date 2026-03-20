@@ -1,4 +1,8 @@
 $schema: "https://moonrepo.dev/schemas/project.json"
 language: "go"
-type: "library"
+
 tags: ["sdk"]
+
+workspace:
+  inheritedTasks:
+    include: []

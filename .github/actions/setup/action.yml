@@ -1,10 +1,12 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-action.json
+#
 # .github/actions/setup/action.yml
 #
 # Usage:
 #   - uses: ./.github/actions/setup
 #     with:
 #       cache-cargo: "true"
-#       cache-pnpm: "flase"
+#       cache-pnpm: "false"
 #
 # Usage (minimal, no project caches):
 #   - uses: ./.github/actions/setup
@@ -30,9 +32,21 @@ runs:
       with:
         fetch-depth: ${{ inputs.fetch-depth }}
 
-    - uses: moonrepo/setup-toolchain@v0
+    - uses: actions/cache@v4
+      if: inputs.cache-cargo == 'true'
       with:
-        auto-install: true
+        path: |
+          ~/.cargo/bin
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          cargo-${{ runner.os }}-
+
+    - name: Install cargo-binstall
+      shell: bash
+      run: command -v cargo-binstall || curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 
     - uses: actions/cache@v4
       with:
@@ -42,20 +56,13 @@ runs:
           moon-${{ runner.os }}-
 
     - uses: actions/cache@v4
-      if: inputs.cache-cargo == 'true'
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          cargo-${{ runner.os }}-
-
-    - uses: actions/cache@v4
       if: inputs.cache-pnpm == 'true'
       with:
         path: ~/.local/share/pnpm/store
         key: pnpm-${{ runner.os }}-${{ hashFiles('**/pnpm-lock.yaml') }}
         restore-keys: |
           pnpm-${{ runner.os }}-
+
+    - uses: moonrepo/setup-toolchain@v0
+      with:
+        auto-install: true

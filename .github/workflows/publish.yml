@@ -18,10 +18,10 @@ on:
         type: boolean
         default: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
-  # ---------------------------------------------------------
-  # 1. Routing Job: Determine Task & Environment
-  # ---------------------------------------------------------
   router:
     name: Determine Target
     runs-on: ubuntu-latest
@@ -79,9 +79,12 @@ jobs:
       contents: write
       packages: write
     steps:
+      # Shallow checkout so GH Actions can resolve local composite actions.
+      # The setup action re-checks out with full history for moon's affected detection.
+      # TODO: Remove once composite actions are published to a shared repo.
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
       - uses: ./.github/actions/setup
 
       - name: Execute Moon Task
