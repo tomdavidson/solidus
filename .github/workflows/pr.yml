@@ -19,9 +19,12 @@ jobs:
       ci-matrix: ${{ steps.ci-matrix.outputs.matrix }}
       runner-count: ${{ steps.ci-matrix.outputs.count }}
     steps:
+      # Shallow checkout so GH Actions can resolve local composite actions.
+      # The setup action re-checks out with full history for moon's affected detection.
+      # TODO: Remove once composite actions are published to a shared repo.
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
       - uses: ./.github/actions/setup
       - id: ci-matrix
         uses: ./.github/actions/moon-ci-matrix

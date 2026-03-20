@@ -14,7 +14,12 @@ jobs:
     permissions:
       deployments: write
     steps:
+      # Shallow checkout so GH Actions can resolve local composite actions.
+      # The setup action re-checks out with full history for moon's affected detection.
+      # TODO: Remove once composite actions are published to a shared repo.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       - uses: ./.github/actions/setup
 
       - id: raa
