@@ -31,8 +31,12 @@ runs:
         fetch-depth: ${{ inputs.fetch-depth }}
 
     - uses: moonrepo/setup-toolchain@v0
-      with:
-        auto-install: true
+      run: |
+        cat .prototools
+        proto debug config
+        proto use --log trace
+      # with:
+      #   auto-install: true
 
     - uses: actions/cache@v4
       with:
