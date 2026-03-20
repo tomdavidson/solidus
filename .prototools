@@ -1,7 +1,6 @@
 actionlint = "1.7.11"
 dprint = "0.53.0"
 gitleaks = "8.28.0"
-gitleaks = "8.28.0"
 shellcheck = "0.11.0"
 
 [plugins.tools]
