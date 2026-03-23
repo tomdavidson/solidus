@@ -1,5 +1,5 @@
 [package]
-name = "parser"
+name = "slasher_engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

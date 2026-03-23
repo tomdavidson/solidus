@@ -3,13 +3,15 @@
 // These tests exercise combinations of modules that no single file's tests can cover.
 // They use only the public API of each module.
 
-use super::document_parse::parse_document;
-use super::line_classify::{LineKind, classify_line};
-use super::line_join::LineJoiner;
-use super::normalize::normalize;
-use crate::domain::ArgumentMode;
+use crate::{
+    ArgumentMode,
+    classify::{LineKind, classify_line},
+    join::LineJoiner,
+    normalize::normalize,
+    parse::parse_document,
+};
 
-// --- normalize + line_join ---
+// --- normalize + join ---
 
 #[test]
 fn crlf_continuation_joins_same_as_lf() {
@@ -87,7 +89,7 @@ fn joining_into_fence_opener_spec_5_2_6() {
     let mut joiner = LineJoiner::new(lines);
 
     let ll = joiner.next_logical().unwrap();
-    assert_eq!(ll.text, "/mcp call_tool write_file  ```json");
+    assert_eq!(ll.text, "/mcp call_tool write_file ```json");
     assert_eq!(ll.first_physical, 0);
     assert_eq!(ll.last_physical, 1);
     assert!(joiner.is_exhausted());
@@ -114,7 +116,7 @@ fn joined_logical_line_classifies_as_single_line_command() {
     match classify_line(&ll.text) {
         LineKind::Command(h) => {
             assert_eq!(h.name, "deploy");
-            assert_eq!(h.header_text, "production   --region us-west-2");
+            assert_eq!(h.header_text, "production  --region us-west-2");
             assert_eq!(h.mode, ArgumentMode::SingleLine);
             assert_eq!(h.fence_backtick_count, 0);
         }
@@ -147,7 +149,7 @@ fn joined_multi_line_command_through_pipeline() {
     assert_eq!(result.commands.len(), 1);
     let cmd = result.commands.first().unwrap();
     assert_eq!(cmd.name, "deploy");
-    assert_eq!(cmd.arguments.header, "production   --region us-west-2");
+    assert_eq!(cmd.arguments.header, "production  --region us-west-2");
     assert_eq!(cmd.arguments.mode, ArgumentMode::SingleLine);
 }
 
@@ -166,10 +168,7 @@ fn fence_immunity_backslash_inside_fence_is_literal() {
     // §2.3: trailing backslash inside fence is literal content, not a join marker.
     let result = parse_document("/cmd ```\nline one\\\nline two\n```");
     assert_eq!(result.commands.len(), 1);
-    assert_eq!(
-        result.commands.first().unwrap().arguments.payload,
-        "line one\\\nline two"
-    );
+    assert_eq!(result.commands.first().unwrap().arguments.payload, "line one\\\nline two");
 }
 
 #[test]
@@ -193,10 +192,7 @@ fn text_block_with_continuation_preserves_backslash() {
     // because text blocks capture pre-join content for round-trip fidelity.
     let result = parse_document("hello \\\nworld");
     assert_eq!(result.textblocks.len(), 1);
-    assert_eq!(
-        result.textblocks.first().unwrap().content,
-        "hello \\\nworld"
-    );
+    assert_eq!(result.textblocks.first().unwrap().content, "hello \\\nworld");
 }
 
 #[test]
@@ -240,20 +236,11 @@ fn spec_a2_joined_multi_line_command() {
     assert_eq!(cmd.name, "deploy");
     assert_eq!(cmd.range.start_line, 0);
     assert_eq!(cmd.range.end_line, 2);
-    assert_eq!(
-        cmd.arguments.header,
-        "production    --region us-west-2    --canary"
-    );
+    assert_eq!(cmd.arguments.header, "production   --region us-west-2   --canary");
     assert_eq!(cmd.arguments.mode, ArgumentMode::SingleLine);
-    assert_eq!(
-        cmd.arguments.payload,
-        "production    --region us-west-2    --canary"
-    );
+    assert_eq!(cmd.arguments.payload, "production   --region us-west-2   --canary");
     // §8.2: raw contains physical lines with backslashes and \n separators.
-    assert_eq!(
-        cmd.raw,
-        "/deploy production \\\n  --region us-west-2 \\\n  --canary"
-    );
+    assert_eq!(cmd.raw, "/deploy production \\\n  --region us-west-2 \\\n  --canary");
 }
 
 #[test]
@@ -289,10 +276,7 @@ fn spec_a4_backslash_join_into_fence() {
     assert_eq!(cmd.arguments.fence_lang, Some("json".to_string()));
     assert_eq!(cmd.arguments.payload, "{\"path\": \"foo\"}");
     // §8.2: raw includes all physical lines from opener through closer.
-    assert_eq!(
-        cmd.raw,
-        "/mcp call_tool write_file \\\n```json\n{\"path\": \"foo\"}\n```"
-    );
+    assert_eq!(cmd.raw, "/mcp call_tool write_file \\\n```json\n{\"path\": \"foo\"}\n```");
 }
 
 #[test]
@@ -305,33 +289,21 @@ fn spec_a5_text_blocks_and_multiple_commands() {
     assert_eq!(result.commands.len(), 2);
     assert_eq!(result.commands.first().unwrap().id, "cmd-0");
     assert_eq!(result.commands.first().unwrap().name, "deploy");
-    assert_eq!(
-        result.commands.first().unwrap().arguments.payload,
-        "staging"
-    );
+    assert_eq!(result.commands.first().unwrap().arguments.payload, "staging");
     assert_eq!(result.commands.first().unwrap().range.start_line, 2);
     assert_eq!(result.commands.get(1).unwrap().id, "cmd-1");
     assert_eq!(result.commands.get(1).unwrap().name, "notify");
-    assert_eq!(
-        result.commands.get(1).unwrap().arguments.payload,
-        "team --channel ops"
-    );
+    assert_eq!(result.commands.get(1).unwrap().arguments.payload, "team --channel ops");
     assert_eq!(result.commands.get(1).unwrap().range.start_line, 3);
 
     // Two text blocks in order.
     assert_eq!(result.textblocks.len(), 2);
     assert_eq!(result.textblocks.first().unwrap().id, "text-0");
-    assert_eq!(
-        result.textblocks.first().unwrap().content,
-        "Welcome to the deployment system.\n"
-    );
+    assert_eq!(result.textblocks.first().unwrap().content, "Welcome to the deployment system.\n");
     assert_eq!(result.textblocks.first().unwrap().range.start_line, 0);
     assert_eq!(result.textblocks.first().unwrap().range.end_line, 1);
     assert_eq!(result.textblocks.get(1).unwrap().id, "text-1");
-    assert_eq!(
-        result.textblocks.get(1).unwrap().content,
-        "Deployment complete."
-    );
+    assert_eq!(result.textblocks.get(1).unwrap().content, "Deployment complete.");
     assert_eq!(result.textblocks.get(1).unwrap().range.start_line, 4);
     assert_eq!(result.textblocks.get(1).unwrap().range.end_line, 4);
 }
@@ -361,8 +333,7 @@ fn spec_a7_unclosed_fence() {
 fn spec_a8_closing_fence_with_trailing_backslash() {
     // Appendix A.8: "```\" is NOT a valid closer (not solely backticks after trim).
     // The fence never closes; all remaining lines become payload. Warning emitted.
-    let input =
-        "/mcp call_tool write_file -c \\\n```json\n{\"path\": \"foo\"}\n```\\\n\\\nproduction";
+    let input = "/mcp call_tool write_file -c \\\n```json\n{\"path\": \"foo\"}\n```\\\n\\\nproduction";
     let result = parse_document(input);
     assert_eq!(result.commands.len(), 1);
     let cmd = result.commands.first().unwrap();
@@ -379,8 +350,7 @@ fn spec_a8_closing_fence_with_trailing_backslash() {
 #[test]
 fn spec_a9_proper_fence_close_followed_by_content() {
     // Appendix A.9: fence closes on line 3, lines 4-5 join into text block.
-    let input =
-        "/mcp call_tool write_file -c \\\n```json\n{\"path\": \"foo\"}\n```\n\\\nproduction";
+    let input = "/mcp call_tool write_file -c \\\n```json\n{\"path\": \"foo\"}\n```\n\\\nproduction";
     let result = parse_document(input);
 
     // One command with closed fence.
@@ -419,7 +389,7 @@ proptest! {
     fn version_is_always_spec_version(input in "\\PC{0,200}") {
         // §8.1: version field is always SPEC_VERSION regardless of input.
         let result = parse_document(&input);
-        prop_assert_eq!(&result.version, crate::domain::SPEC_VERSION);
+        prop_assert_eq!(&result.version, crate::SPEC_VERSION);
     }
 
     #[test]

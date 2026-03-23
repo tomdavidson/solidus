@@ -2,7 +2,3 @@ $schema: "https://moonrepo.dev/schemas/project.json"
 id: "parser"
 language: "rust"
 tags: ["core"]
-
-workspace:
-  inheritedTasks:
-    include: []

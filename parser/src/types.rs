@@ -1,4 +1,4 @@
-use super::errors::Warning;
+pub const SPEC_VERSION: &str = "0.3.0";
 
 /// Inclusive line range (zero-based).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,4 +50,14 @@ pub struct ParseResult {
     pub warnings: Vec<Warning>,
 }
 
-pub const SPEC_VERSION: &str = "0.3.0";
+
+/// Non-fatal conditions detected during parsing.
+///
+/// Warnings are collected in `ParseResult.warnings` rather than
+/// causing the parse to fail. The parser is intentionally permissive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Warning {
+    pub wtype: String,
+    pub start_line: Option<usize>,
+    pub message: Option<String>,
+}

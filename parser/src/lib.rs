@@ -1,11 +1,19 @@
-mod application;
-mod domain;
+// Internal modules
+mod classify;
+mod fence;
+mod join;
+mod normalize;
+mod parse;
+mod single_line;
+mod text;
+mod types;
 
-// Domain types
-pub use domain::{
-    ArgumentMode, Command, CommandArguments, LineRange, ParseResult, SPEC_VERSION, TextBlock,
-    Warning,
+// Public API
+pub use parse::parse_document;
+pub use types::{
+    ArgumentMode, Command, CommandArguments, LineRange,
+    ParseResult, SPEC_VERSION, TextBlock, Warning,
 };
 
-// Engine entry point
-pub use application::parse_document;
+#[cfg(test)]
+mod integration_tests;
