@@ -8,6 +8,8 @@
 /// Fence immunity is enforced by the caller: when the state machine enters
 /// `InFence`, it calls `next_physical` directly instead of `next_logical`,
 /// bypassing the joiner for those lines.
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogicalLine {
     pub text: String,
     pub first_physical: usize,
@@ -125,14 +127,8 @@ mod tests {
 
     #[test]
     fn consume_logical_joins_two_lines() {
-        // RFC §3.2 steps 1-3: remove trailing '\', remove LF boundary,
-        // concatenate with next line separated by a single SPACE.
-        //
-        // BUG: RFC v1.1.0 §3.2 step 3 says "Concatenate the remainder with
-        // the next physical line, separated by a single U+0020 (SPACE)."
-        // However Engine Spec v0.5.0 §7.1 says "No separator character is
-        // inserted" (true POSIX). The code inserts a space, matching the RFC
-        // but contradicting the Engine Spec. See gaps comment.
+        // Engine Spec §7.1: remove trailing '\', concatenate directly with
+        // the next physical line. No separator character is inserted.
         let ls = vec![bsl("a"), "b".to_string()];
         let mut cursor = 0;
         let ll = consume_logical(&ls, &mut cursor).unwrap();
@@ -321,6 +317,230 @@ mod tests {
     }
 
     // =========================================================================
+    // consume_logical — no separator insertion (POSIX semantics)
+    // Engine Spec §7.1: "No separator character is inserted."
+    // =========================================================================
+
+    #[test]
+    fn consume_logical_does_not_insert_separator_space() {
+        // Engine Spec §7.1: joining concatenates directly with no separator.
+        // This test guards against regression to the v0.3.0 space-insertion
+        // behavior (Engine Spec §16.1).
+        let ls = vec![bsl("x"), "y".to_string()];
+        let mut cursor = 0;
+        let ll = consume_logical(&ls, &mut cursor).unwrap();
+        assert_eq!(ll.text.len(), 2);
+        assert_eq!(ll.text.as_bytes(), b"xy");
+    }
+
+    // =========================================================================
+    // consume_logical — multi-backslash content preservation
+    // RFC §3.2: "The join marker is any '\' immediately before the line
+    // boundary, regardless of what precedes it."
+    // =========================================================================
+
+    #[test]
+    fn consume_logical_double_backslash_preserves_content_backslash() {
+        // RFC §3.2: only the final '\' (immediately before LF) is the join
+        // marker. A preceding '\' is literal content and must be preserved.
+        // Input: "foo\\" (two backslashes) + "bar"
+        // After removing the final '\' and joining: "foo\bar"
+        let mut line = "foo\\".to_string();
+        line.push('\\'); // "foo\\" — two trailing backslashes
+        let ls = vec![line, "bar".to_string()];
+        let mut cursor = 0;
+        let ll = consume_logical(&ls, &mut cursor).unwrap();
+        assert_eq!(ll.text, "foo\\bar");
+        assert_eq!(ll.first_physical, 0);
+        assert_eq!(ll.last_physical, 1);
+    }
+
+    #[test]
+    fn consume_logical_triple_backslash_joins_and_preserves_two() {
+        // RFC §3.2: three trailing backslashes. The final one is the join
+        // marker; after removal and joining, the result still ends with '\'
+        // so another join occurs.
+        // Input: "a\\\" + "b" → after first join: "a\\" + "b" → "a\\b"
+        //   wait — let's be precise:
+        //   Physical line 0: "a\\\" (three chars after 'a': \, \, \)
+        //   Step 1: ends with '\', remove it → "a\\"
+        //   Step 2: "a\\" still ends with '\', remove it → "a\"  — wait,
+        //   no. After removing the last '\' and concatenating line 1:
+        //   "a\\" + "b" = "a\\b". Then check: does "a\\b" end with '\'? No.
+        //   So the result is "a\\b".
+        //
+        // Actually: "a\\\" is 4 bytes: a, \, \, \.
+        //   ends_with('\') → true. Truncate last → "a\\"
+        //   Concat next line "b" → "a\\b"
+        //   ends_with('\') on "a\\b"? No → done.
+        let mut line = "a".to_string();
+        line.push('\\');
+        line.push('\\');
+        line.push('\\');
+        let ls = vec![line, "b".to_string()];
+        let mut cursor = 0;
+        let ll = consume_logical(&ls, &mut cursor).unwrap();
+        assert_eq!(ll.text, "a\\\\b");
+        assert_eq!(ll.last_physical, 1);
+    }
+
+    // =========================================================================
+    // consume_logical — backslash-only line
+    // RFC §3.2: empty remainder joins directly with the next physical line.
+    // =========================================================================
+
+    #[test]
+    fn consume_logical_backslash_only_line_joins_with_next() {
+        // RFC §3.2: a line containing only '\' has empty remainder after
+        // removing the join marker. Direct concatenation (no separator per
+        // Engine Spec §7.1) produces the next line's content unchanged.
+        let ls = vec![bsl(""), "hello".to_string()];
+        let mut cursor = 0;
+        let ll = consume_logical(&ls, &mut cursor).unwrap();
+        assert_eq!(ll.text, "hello");
+        assert_eq!(ll.first_physical, 0);
+        assert_eq!(ll.last_physical, 1);
+    }
+
+    #[test]
+    fn consume_logical_backslash_only_at_eof() {
+        // RFC §3.2: backslash-only line at EOF. The '\' is removed; the line
+        // stands alone as an empty string.
+        let ls = vec![bsl("")];
+        let mut cursor = 0;
+        let ll = consume_logical(&ls, &mut cursor).unwrap();
+        assert_eq!(ll.text, "");
+        assert_eq!(ll.first_physical, 0);
+        assert_eq!(ll.last_physical, 0);
+    }
+
+    // =========================================================================
+    // consume_logical — whitespace-only continuation line
+    // RFC §3.2: no trimming of continuation lines; all content is preserved.
+    // =========================================================================
+
+    #[test]
+    fn consume_logical_whitespace_only_continuation_preserves_spaces() {
+        // RFC §3.2: the continuation line is concatenated verbatim. No
+        // trimming occurs. Engine Spec §7.1: no separator inserted.
+        let ls = vec![bsl("cmd"), "   ".to_string()];
+        let mut cursor = 0;
+        let ll = consume_logical(&ls, &mut cursor).unwrap();
+        assert_eq!(ll.text, "cmd   ");
+        assert_eq!(ll.first_physical, 0);
+        assert_eq!(ll.last_physical, 1);
+    }
+
+    #[test]
+    fn consume_logical_tab_continuation_preserved() {
+        // RFC §3.2 + Engine Spec §6: HTAB is valid whitespace. The joiner
+        // must not strip or replace it.
+        let ls = vec![bsl("cmd"), "\targ".to_string()];
+        let mut cursor = 0;
+        let ll = consume_logical(&ls, &mut cursor).unwrap();
+        assert_eq!(ll.text, "cmd\targ");
+    }
+
+    // =========================================================================
+    // consume_logical — trailing whitespace before backslash
+    // Engine Spec §7.1: content before the '\' is preserved as-is.
+    // =========================================================================
+
+    #[test]
+    fn consume_logical_trailing_space_before_backslash_preserved() {
+        // Engine Spec §7.1: the joiner removes only the final '\'. Any
+        // trailing space before it is part of the content and is preserved.
+        let ls = vec![bsl("cmd "), "arg".to_string()];
+        let mut cursor = 0;
+        let ll = consume_logical(&ls, &mut cursor).unwrap();
+        assert_eq!(ll.text, "cmd arg");
+        assert_eq!(ll.first_physical, 0);
+        assert_eq!(ll.last_physical, 1);
+    }
+
+    // =========================================================================
+    // consume_logical — empty lines in join chains
+    // RFC §3.2: joining behavior does not depend on line content.
+    // =========================================================================
+
+    #[test]
+    fn consume_logical_empty_continuation_line() {
+        // RFC §3.2: empty continuation line produces no additional content.
+        // Engine Spec §7.1: no separator, so result is just the first line's
+        // content (without the backslash).
+        let ls = vec![bsl("prefix"), "".to_string()];
+        let mut cursor = 0;
+        let ll = consume_logical(&ls, &mut cursor).unwrap();
+        assert_eq!(ll.text, "prefix");
+        assert_eq!(ll.last_physical, 1);
+    }
+
+    // =========================================================================
+    // consume_logical — chained EOF backslash after join
+    // RFC §3.2 step 4: repeat if result still ends with '\'.
+    // =========================================================================
+
+    #[test]
+    fn consume_logical_mid_chain_eof_removes_backslash() {
+        // RFC §3.2: two physical lines both end with '\', but there is no
+        // third line. The first join succeeds; the second '\' hits EOF and
+        // is silently removed.
+        let ls = vec![bsl("a"), bsl("b")];
+        let mut cursor = 0;
+        let ll = consume_logical(&ls, &mut cursor).unwrap();
+        assert_eq!(ll.text, "ab");
+        assert_eq!(ll.first_physical, 0);
+        assert_eq!(ll.last_physical, 1);
+    }
+
+    // =========================================================================
+    // LineJoiner — interleaving modes with shared cursor
+    // Engine Spec §5.3: idle uses next_logical, in-fence uses next_physical.
+    // =========================================================================
+
+    #[test]
+    fn physical_then_logical_shares_cursor() {
+        // Engine Spec §5.3 / §7.2: after consuming physical lines (fence body),
+        // switching back to next_logical resumes at the correct position.
+        let input = vec!["fence body".to_string(), "```".to_string(), bsl("/cmd arg"), "rest".to_string()];
+        let mut j = LineJoiner::new(input);
+        // Simulate in-fence: consume two physical lines.
+        let (idx0, _) = j.next_physical().unwrap();
+        assert_eq!(idx0, 0);
+        let (idx1, _) = j.next_physical().unwrap();
+        assert_eq!(idx1, 1);
+        // Transition to idle: next_logical joins lines 2-3.
+        let ll = j.next_logical().unwrap();
+        assert_eq!(ll.text, "/cmd argrest");
+        assert_eq!(ll.first_physical, 2);
+        assert_eq!(ll.last_physical, 3);
+        assert!(j.is_exhausted());
+    }
+
+    // =========================================================================
+    // RFC Appendix B.2 — updated assertion for no-separator semantics
+    // Engine Spec §7.1 + RFC Appendix B.2
+    // =========================================================================
+
+    #[test]
+    fn appendix_b2_with_leading_whitespace_on_continuations() {
+        // RFC Appendix B.2 shows continuation lines indented with spaces.
+        // After joining (no separator), the leading spaces on continuation
+        // lines provide the visual separation.
+        // Input:
+        //   "/deploy production \"   (trailing space before \)
+        //   "  --region us-west-2 \"  (two leading spaces, trailing space before \)
+        //   "  --canary"             (two leading spaces)
+        // Result: "production " + "  --region..." + "  --canary"
+        let input = vec![bsl("/deploy production "), bsl("  --region us-west-2 "), "  --canary".to_string()];
+        let mut j = LineJoiner::new(input);
+        let ll = j.next_logical().unwrap();
+        assert_eq!(ll.text, "/deploy production   --region us-west-2   --canary");
+        assert_eq!(ll.first_physical, 0);
+        assert_eq!(ll.last_physical, 2);
+    }
+
+    // =========================================================================
     // Property tests
     // =========================================================================
 
@@ -384,49 +604,3 @@ mod tests {
         }
     }
 }
-
-// =============================================================================
-// TEST GAPS: spec areas this file's functions touch but are not tested
-// =============================================================================
-//
-// | Spec Section                          | Gap                                          | Severity |
-// |-----------------------------------------|----------------------------------------------|----------|
-// | Engine Spec §7.1 vs RFC §3.2 step 3  | SPACE INSERTION CONFLICT: The code inserts    | CRITICAL |
-// |                                         | a space between joined lines (text.push(' ')) |          |
-// |                                         | matching RFC §3.2 step 3. But Engine Spec    |          |
-// |                                         | v0.5.0 §7.1 says "No separator character is  |          |
-// |                                         | inserted. This is true POSIX backslash-       |          |
-// |                                         | newline removal." and §15.1 migration notes  |          |
-// |                                         | explicitly changed this from v0.3.0.          |          |
-// |                                         | THE RFC AND ENGINE SPEC CONTRADICT EACH       |          |
-// |                                         | OTHER. Must resolve which is authoritative.   |          |
-// |-----------------------------------------------------------------------|----------|
-// | RFC §3.2                               | MULTI-BACKSLASH: No test for a line ending    | MEDIUM   |
-// |                                         | with multiple backslashes (e.g., "foo\\\\").  |          |
-// |                                         | Two backslashes: the last '\' is the join     |          |
-// |                                         | marker, the preceding '\' is content. Only    |          |
-// |                                         | the final '\' should be removed.              |          |
-// |-----------------------------------------------------------------------|----------|
-// | RFC §3.2                               | EMPTY LINE WITH BACKSLASH: No test for a      | LOW      |
-// |                                         | line that is just "\" (backslash only). Should |          |
-// |                                         | join with next line, producing just the next   |          |
-// |                                         | line's content (with or without leading space  |          |
-// |                                         | depending on space-insertion resolution).      |          |
-// |-----------------------------------------------------------------------|----------|
-// | RFC §3.3                               | PHYSICAL LINE TRACKING FOR TEXT BLOCKS: No    | LOW      |
-// |                                         | test verifying that a joined text line's       |          |
-// |                                         | constituent physical lines (with backslashes)  |          |
-// |                                         | are preserved for text block raw content       |          |
-// |                                         | (Engine Spec §10). This is the text_collect    |          |
-// |                                         | module's job, but the LogicalLine range data   |          |
-// |                                         | is what enables it.                            |          |
-// |-----------------------------------------------------------------------|----------|
-// | RFC §3.2                               | WHITESPACE-ONLY CONTINUATION LINE: No test    | LOW      |
-// |                                         | for joining where the continuation line is     |          |
-// |                                         | only whitespace (e.g., "cmd\\" + "   ").       |          |
-// |                                         | Verifies no trimming occurs.                   |          |
-// |-----------------------------------------------------------------------|----------|
-// | Engine Spec §7.1                       | NO-SEPARATOR JOIN ASSERTION: If the Engine    | LOW      |
-// |                                         | Spec is authoritative (no space), there is no  |          |
-// |                                         | test asserting direct concatenation without    |          |
-// |                                         | space. The current tests all assert WITH space.|          |

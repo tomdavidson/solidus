@@ -1,4 +1,4 @@
-pub const SPEC_VERSION: &str = "0.3.0";
+pub const SPEC_VERSION: &str = "0.5.0";
 
 /// Inclusive line range (zero-based).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,7 +49,6 @@ pub struct ParseResult {
     pub textblocks: Vec<TextBlock>,
     pub warnings: Vec<Warning>,
 }
-
 
 /// Non-fatal conditions detected during parsing.
 ///

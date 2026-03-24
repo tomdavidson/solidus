@@ -107,6 +107,49 @@ mod tests {
     }
 
     // =========================================================================
+    // Boundary: single-character / single-sequence inputs
+    // RFC §3.1
+    // =========================================================================
+
+    #[test]
+    fn lone_crlf_becomes_lone_lf() {
+        // RFC §3.1 step 1: a single CRLF with no surrounding content.
+        assert_eq!(normalize("\r\n"), "\n");
+    }
+
+    #[test]
+    fn lone_bare_cr_becomes_lf() {
+        // RFC §3.1 step 2: a single bare CR with no surrounding content.
+        assert_eq!(normalize("\r"), "\n");
+    }
+
+    #[test]
+    fn lone_lf_unchanged() {
+        // RFC §3.1: LF is already normalized.
+        assert_eq!(normalize("\n"), "\n");
+    }
+
+    // =========================================================================
+    // Non-ASCII / multi-byte UTF-8 preservation
+    // RFC §3.1: only CR and CRLF are affected; all other bytes preserved.
+    // =========================================================================
+
+    #[test]
+    fn multibyte_utf8_preserved() {
+        // RFC §3.1: normalization only affects U+000D and U+000D U+000A.
+        // Multi-byte content (CJK, emoji) must survive unchanged.
+        let input = "héllo\r\nwörld\r🌍";
+        assert_eq!(normalize(input), "héllo\nwörld\n🌍");
+    }
+
+    #[test]
+    fn astral_plane_chars_preserved() {
+        // RFC §3.1: non-BMP characters are not line terminators.
+        let input = "𝕳𝖊𝖑𝖑𝖔\r\n𝖂𝖔𝖗𝖑𝖉";
+        assert_eq!(normalize(input), "𝕳𝖊𝖑𝖑𝖔\n𝖂𝖔𝖗𝖑𝖉");
+    }
+
+    // =========================================================================
     // Property tests
     // =========================================================================
 
@@ -145,45 +188,27 @@ mod tests {
             let result_lf = result.chars().filter(|&c| c == '\n').count();
             prop_assert!(result_lf >= original_lf);
         }
+
+            // =========================================================================
+    // Property tests (add inside existing proptest! block)
+    // =========================================================================
+
+    // RFC §3.1 steps 1-2: CRLF (2 bytes) becomes LF (1 byte), bare CR (1 byte)
+    // becomes LF (1 byte). Output can never be longer than input.
+    #[test]
+    #[cfg_attr(feature = "tdd", ignore)]
+    fn output_length_lte_input(input in "[\\x00-\\x7F]{0,500}") {
+        let result = normalize(&input);
+        prop_assert!(result.len() <= input.len());
+    }
+
+    // RFC §3.1: normalize is a pure function of its input. Same input always
+    // produces the same output (no hidden state).
+    #[test]
+    #[cfg_attr(feature = "tdd", ignore)]
+    fn deterministic(input in "[\\x00-\\x7F]{0,300}") {
+        prop_assert_eq!(normalize(&input), normalize(&input));
+    }
+
     }
 }
-
-// =============================================================================
-// TEST GAPS: spec areas this file's functions touch but are not tested
-// =============================================================================
-//
-// | Spec Section                    | Gap                                             | Severity |
-// |---------------------------------|-------------------------------------------------|----------|
-// | RFC §3.1                        | SPLIT_LINES: The spec says "The normalized      | HIGH     |
-// |                                 | input is split on LF to produce a sequence of   |          |
-// |                                 | physical lines." Engine Spec §5.2 defines this  |          |
-// |                                 | as a separate stage. This module only covers     |          |
-// |                                 | normalization, not splitting. If split_lines     |          |
-// |                                 | lives elsewhere, that's fine, but if it's        |          |
-// |                                 | missing entirely it's a gap.                     |          |
-// |---------------------------------|-------------------------------------------------|----------|
-// | RFC §3.1                        | TRAILING LF: "A trailing LF at the end of       | MEDIUM   |
-// |                                 | input produces a trailing empty line." No test   |          |
-// |                                 | verifies that normalize preserves a trailing     |          |
-// |                                 | \n (e.g., "hello\n" -> "hello\n"). This is       |          |
-// |                                 | trivially true for LF input but should be        |          |
-// |                                 | verified for trailing \r and trailing \r\n.      |          |
-// |---------------------------------|-------------------------------------------------|----------|
-// | RFC §3.1                        | UNICODE / NON-ASCII: All property tests use      | LOW      |
-// |                                 | ASCII [\x00-\x7F]. No test verifies that         |          |
-// |                                 | multi-byte UTF-8 content (e.g., emoji, CJK)     |          |
-// |                                 | passes through normalization unmodified. The     |          |
-// |                                 | implementation (.replace) handles this            |          |
-// |                                 | correctly, but a test would guard regressions.   |          |
-// |---------------------------------|-------------------------------------------------|----------|
-// | RFC §3.1                        | LENGTH INVARIANT: normalize can only shrink      | LOW      |
-// |                                 | (CRLF -> LF removes one byte) or preserve       |          |
-// |                                 | length. No property test asserts                 |          |
-// |                                 | result.len() <= input.len().                     |          |
-// |---------------------------------|-------------------------------------------------|----------|
-// | Engine Spec §5.1                | PURE FUNCTION: "This stage is a pure string     | INFO     |
-// |                                 | transformation with no state." No test verifies  |          |
-// |                                 | that calling normalize multiple times on         |          |
-// |                                 | different inputs doesn't leak state (trivially   |          |
-// |                                 | true for a free function, but documenting the    |          |
-// |                                 | intent is useful).                               |          |

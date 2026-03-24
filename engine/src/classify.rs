@@ -45,15 +45,17 @@ fn find_fence_opener(s: &str) -> Option<(usize, usize)> {
         .map(|(start, chunk)| (start, chunk.len()))
 }
 
+fn is_wsp(c: char) -> bool { c == ' ' || c == '\t' }
+
 fn try_parse_command(line: &str) -> Option<CommandHeader> {
-    let trimmed = line.trim_start();
+    let trimmed = line.trim_start_matches(is_wsp);
     if !trimmed.starts_with('/') {
         return None;
     }
 
     let without_slash = &trimmed[1..];
 
-    let mut parts = without_slash.splitn(2, char::is_whitespace);
+    let mut parts = without_slash.splitn(2, is_wsp);
     let name_raw = parts.next().filter(|n| !n.is_empty())?;
 
     // RFC §4.1: [a-z]([a-z0-9-]*[a-z0-9])?
@@ -65,15 +67,23 @@ fn try_parse_command(line: &str) -> Option<CommandHeader> {
         return None;
     }
 
+    // RFC §4.1: "Multi-character names MUST NOT end with a hyphen."
+    // Engine Spec §15.1: trailing hyphen prohibition added in v0.5.0.
+    if name_raw.len() > 1 && name_raw.ends_with('-') {
+        return None;
+    }
+
     let name = name_raw.to_string();
-    let rest = parts.next().unwrap_or("").trim_start();
+    let rest = parts.next().unwrap_or("").trim_start_matches(is_wsp);
 
     // RFC §5.2.1: detect first occurrence of 3+ backticks anywhere in the args.
     if let Some((fence_start, fence_count)) = find_fence_opener(rest) {
         let header_text = rest[..fence_start].trim_end().to_string();
         let after_ticks = &rest[fence_start + fence_count..];
-        let after_trimmed = after_ticks.trim();
-        let fence_lang = if !after_trimmed.is_empty() && !after_trimmed.contains(char::is_whitespace) {
+        let after_trimmed = after_ticks.trim_matches(is_wsp);
+        let fence_lang = if !after_trimmed.is_empty()
+            && !after_trimmed.contains(is_wsp)
+        {
             Some(after_trimmed.to_string())
         } else {
             None
@@ -103,6 +113,7 @@ fn try_parse_command(line: &str) -> Option<CommandHeader> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helper::valid_command_name;
 
     // =========================================================================
     // find_fence_opener — internal helper
@@ -382,16 +393,52 @@ mod tests {
         assert_eq!(classify_line("/cmd-"), LineKind::Text);
     }
 
+
+    #[test]
+fn fence_lang_with_nbsp_is_valid_token() {
+    // RFC Appendix A: NONWSP = %x21-7E / %x80-10FFFF — U+00A0 (NBSP)
+    // is above %x7E in codepoint but falls in %x80-10FFFF, so it is
+    // a valid non-whitespace character per the ABNF. A lang-id
+    // consisting of a single token containing NBSP must be accepted.
+    // NOTE: will FAIL until fence_lang extraction uses is_wsp instead
+    // of char::is_whitespace for the single-token check.
+    let h = try_parse_command("/cmd ``` nb\u{00A0}sp").unwrap();
+    assert_eq!(h.fence_lang, Some("nb\u{00A0}sp".to_string()));
+}
+
+#[test]
+fn fence_lang_with_em_space_is_valid_token() {
+    // RFC Appendix A: NONWSP includes %x80-10FFFF. U+2003 (EM SPACE)
+    // is not whitespace per spec, so it does not split a lang-id token.
+    // NOTE: will FAIL until fence_lang extraction uses is_wsp instead
+    // of char::is_whitespace for the single-token check.
+    let h = try_parse_command("/cmd ``` em\u{2003}sp").unwrap();
+    assert_eq!(h.fence_lang, Some("em\u{2003}sp".to_string()));
+}
+
+#[test]
+fn fence_lang_split_by_space_is_none() {
+    // RFC §5.2.1: lang-id must be "a single token (no internal
+    // whitespace)." SP (U+0020) is WSP per ABNF, so two words
+    // separated by SP means no valid lang-id.
+    let h = try_parse_command("/cmd ``` two words").unwrap();
+    assert_eq!(h.fence_lang, None);
+}
+
+#[test]
+fn fence_lang_split_by_tab_is_none() {
+    // RFC §5.2.1 + Appendix A: HTAB (U+0009) is WSP. A tab between
+    // tokens means the string is not a single token.
+    let h = try_parse_command("/cmd ``` two\twords").unwrap();
+    assert_eq!(h.fence_lang, None);
+}
+
+
     // =========================================================================
     // Property tests
     // =========================================================================
 
     use proptest::prelude::*;
-
-    // RFC §4.1: [a-z]([a-z0-9-]*[a-z0-9])?
-    fn valid_command_name() -> impl Strategy<Value = String> {
-        "[a-z][a-z0-9\\-]{0,20}".prop_map(|s| s)
-    }
 
     fn arbitrary_line() -> impl Strategy<Value = String> {
         prop_oneof![
@@ -404,6 +451,210 @@ mod tests {
                     .prop_map(move |(spaces, args)| format!("{}/{} {}", " ".repeat(spaces), name, args))
             }),
         ]
+    }
+
+    // =========================================================================
+    // try_parse_command — trailing hyphen edge cases
+    // RFC §4.1: "Multi-character names MUST NOT end with a hyphen."
+    // =========================================================================
+
+    #[test]
+    fn single_hyphen_after_letter_returns_none() {
+        // RFC §4.1: "a-" is two characters ending with hyphen, invalid.
+        assert!(try_parse_command("/a-").is_none());
+    }
+
+    #[test]
+    fn trailing_hyphen_with_fence_returns_none() {
+        // RFC §4.1: trailing hyphen prohibition applies even when args
+        // contain a fence opener. The name is invalid before args are parsed.
+        assert!(try_parse_command("/cmd- ```json").is_none());
+    }
+
+    #[test]
+    fn internal_hyphens_valid() {
+        // RFC §4.1: hyphens between alphanumerics are fine. Only trailing
+        // hyphens are prohibited.
+        let h = try_parse_command("/a-b-c args").unwrap();
+        assert_eq!(h.name, "a-b-c");
+    }
+
+    // =========================================================================
+    // try_parse_command — special characters after slash
+    // RFC §4.5: invalid slash lines are text.
+    // =========================================================================
+
+    #[test]
+    fn slash_exclamation_returns_none() {
+        // RFC §4.5: "/foo!bar" does not match [a-z0-9-].
+        assert!(try_parse_command("/foo!bar").is_none());
+    }
+
+    #[test]
+    fn slash_at_sign_returns_none() {
+        // RFC §4.5: "/@cmd" starts with non-LCALPHA after slash.
+        assert!(try_parse_command("/@cmd").is_none());
+    }
+
+    #[test]
+    fn slash_dot_returns_none() {
+        // RFC §4.5: "/cmd.sub" contains '.', not in [a-z0-9-].
+        assert!(try_parse_command("/cmd.sub").is_none());
+    }
+
+    #[test]
+    fn slash_emoji_returns_none() {
+        // RFC §4.1: command name must be ASCII lowercase. Non-ASCII -> invalid.
+        assert!(try_parse_command("/🚀").is_none());
+    }
+
+    // =========================================================================
+    // try_parse_command — leading whitespace: tab handling
+    // RFC §4.2 + Engine Spec §6: WSP is SP (U+0020) and HTAB (U+0009) only.
+    // =========================================================================
+
+    #[test]
+    fn leading_tab_stripped_for_detection() {
+        // RFC §4.2: "first non-whitespace character is /"
+        // Engine Spec §6: HTAB is valid leading whitespace.
+        let h = try_parse_command("\t/cmd arg").unwrap();
+        assert_eq!(h.name, "cmd");
+        assert_eq!(h.header_text, "arg");
+    }
+
+    #[test]
+    fn leading_mixed_space_and_tab() {
+        // Engine Spec §6: both SP and HTAB are valid leading whitespace.
+        let h = try_parse_command(" \t /cmd arg").unwrap();
+        assert_eq!(h.name, "cmd");
+    }
+
+    #[test]
+    fn raw_preserves_leading_tab() {
+        // RFC §7.1: raw is the exact source text including leading whitespace.
+        let h = try_parse_command("\t/cmd arg").unwrap();
+        assert_eq!(h.raw, "\t/cmd arg");
+    }
+
+    // =========================================================================
+    // try_parse_command — exotic Unicode whitespace must NOT be treated as WSP
+    // Engine Spec §6: "The engine MUST NOT use Rust's char::is_whitespace()"
+    // NOTE: These tests assert the CORRECT spec behavior. The current
+    // implementation uses trim_start() which strips Unicode WSP, so these
+    // will FAIL until the code is updated to use is_wsp().
+    // =========================================================================
+
+    #[test]
+    fn non_breaking_space_leading_is_not_stripped() {
+        // Engine Spec §6: U+00A0 (NO-BREAK SPACE) is NOT whitespace per spec.
+        // A line starting with NBSP then "/" is not a command because the first
+        // non-WSP character is NBSP, not "/".
+        assert_eq!(classify_line("\u{00A0}/cmd arg"), LineKind::Text);
+    }
+
+    #[test]
+    fn em_space_leading_is_not_stripped() {
+        // Engine Spec §6: U+2003 (EM SPACE) is NOT whitespace per spec.
+        assert_eq!(classify_line("\u{2003}/cmd arg"), LineKind::Text);
+    }
+
+    // =========================================================================
+    // try_parse_command — name/args separator whitespace
+    // RFC §4.3 + Engine Spec §6: separator is SP or HTAB only.
+    // =========================================================================
+
+    #[test]
+    fn tab_separates_name_from_args() {
+        // Engine Spec §6: HTAB is valid separator between name and arguments.
+        let h = try_parse_command("/cmd\targ1 arg2").unwrap();
+        assert_eq!(h.name, "cmd");
+        assert_eq!(h.header_text, "arg1 arg2");
+    }
+
+    #[test]
+    fn non_breaking_space_does_not_separate_name() {
+        // Engine Spec §6: U+00A0 is NOT a valid separator. It becomes part of
+        // the command name, which then fails validation (non-ASCII).
+        // NOTE: will FAIL until code replaces char::is_whitespace with is_wsp().
+        assert!(try_parse_command("/cmd\u{00A0}arg").is_none());
+    }
+
+    // =========================================================================
+    // try_parse_command — fence opener touching header text (no space)
+    // RFC §5.2.1: "first occurrence of three or more consecutive backtick
+    // characters" in the arguments portion.
+    // =========================================================================
+
+    #[test]
+    fn fence_opener_directly_touching_alpha_header() {
+        // RFC §5.2.1: backticks do not need to be space-separated from header.
+        // "header```json" — header is "header", fence opens.
+        let h = try_parse_command("/cmd header```json").unwrap();
+        assert_eq!(h.header_text, "header");
+        assert_eq!(h.mode, ArgumentMode::Fence);
+        assert_eq!(h.fence_lang, Some("json".to_string()));
+        assert_eq!(h.fence_backtick_count, 3);
+    }
+
+    #[test]
+    fn fence_opener_touching_numeric_header() {
+        // RFC §5.2.1: first occurrence rule applies regardless of preceding chars.
+        let h = try_parse_command("/cmd 123```").unwrap();
+        assert_eq!(h.header_text, "123");
+        assert_eq!(h.mode, ArgumentMode::Fence);
+        assert_eq!(h.fence_lang, None);
+    }
+
+    // =========================================================================
+    // try_parse_command — fence language identifier edge cases
+    // RFC §5.2.1: "single token (no internal whitespace)"
+    // =========================================================================
+
+    #[test]
+    fn fence_lang_with_digits() {
+        // RFC §5.2.1: lang-id is any NONWSP token. Digits are valid.
+        let h = try_parse_command("/cmd ```es2024").unwrap();
+        assert_eq!(h.fence_lang, Some("es2024".to_string()));
+    }
+
+    #[test]
+    fn fence_lang_with_hyphen() {
+        // RFC §5.2.1: lang-id can contain hyphens (e.g., "utf-8").
+        let h = try_parse_command("/cmd ```utf-8").unwrap();
+        assert_eq!(h.fence_lang, Some("utf-8".to_string()));
+    }
+
+    #[test]
+    fn fence_lang_with_dots() {
+        // RFC §5.2.1: lang-id is any single non-whitespace token.
+        let h = try_parse_command("/cmd ```.gitignore").unwrap();
+        assert_eq!(h.fence_lang, Some(".gitignore".to_string()));
+    }
+
+    #[test]
+    fn fence_lang_empty_after_trailing_whitespace() {
+        // RFC §5.2.1: "trimmed of leading whitespace, if non-empty" — if only
+        // whitespace follows the backticks, fence_lang is None.
+        let h = try_parse_command("/cmd ```   ").unwrap();
+        assert_eq!(h.fence_lang, None);
+    }
+
+    // =========================================================================
+    // classify_line — empty and whitespace-only lines
+    // RFC §6.3: non-command lines are text.
+    // =========================================================================
+
+    #[test]
+    fn empty_line_is_text() {
+        // RFC §6.3: blank lines are text lines.
+        assert_eq!(classify_line(""), LineKind::Text);
+    }
+
+    #[test]
+    fn whitespace_only_line_is_text() {
+        // RFC §6.3: whitespace-only lines are text (no "/" present).
+        assert_eq!(classify_line("   "), LineKind::Text);
+        assert_eq!(classify_line("\t\t"), LineKind::Text);
     }
 
     proptest! {
@@ -486,16 +737,20 @@ mod tests {
                 prop_assert_eq!(h.fence_backtick_count, 3 + extra);
             }
         }
+    // =========================================================================
+    // Property tests — trailing hyphen rejection
+    // =========================================================================
+
+
+       // RFC §4.1: names ending with hyphen are always rejected.
+       #[test]
+       #[cfg_attr(feature = "tdd", ignore)]
+       fn trailing_hyphen_always_rejected(
+           prefix in "[a-z][a-z0-9]{0,10}",
+           args in "[a-zA-Z0-9 ]{0,40}"
+       ) {
+           let input = format!("/{prefix}- {args}");
+           prop_assert!(matches!(classify_line(&input), LineKind::Text));
+       }
     }
 }
-
-/*
-| Spec Section                 | Gap                                                                                                                                                                                                                                                                                                         |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| RFC §4.1 (ABNF command-name) | The code does not reject trailing hyphens. The regex in try_parse_command still uses the old v0.3.1 pattern [a-z][a-z0-9-]*. The new tests I added (trailing_hyphen_returns_none) will FAIL until the implementation is fixed to match [a-z]([a-z0-9-]*[a-z0-9])?. This is a code bug, not just a test gap. |
-| RFC §4.2                     | Tab (HTAB) as leading whitespace. The code uses trim_start() which trims all Unicode whitespace. Engine Spec §6 requires only SP and HTAB. No test uses \\t/cmd to verify tab handling, and no test checks that exotic Unicode whitespace (e.g. U+00A0) is NOT stripped.                                    |
-| RFC §4.3                     | Whitespace separator between name and args uses char::is_whitespace (splits on any Unicode WSP). Engine Spec §6 mandates only SP/HTAB. No test verifies that a non-breaking space between name and args is handled correctly.                                                                               |
-| RFC §5.2.1                   | No test for fence opener with exactly the backticks touching the header text with no space (e.g., /cmd header```json where header runs directly into backticks). The mid-args test uses -c```json but not a pure alpha header.                                                                              |
-| RFC §5.2.1                   | No test for lang-id that contains digits or hyphens (e.g., utf-8, es2024).                                                                                                                                                                                                                                  |
-| Engine Spec §6               | The is_wsp() helper mandate is not followed in the implementation. trim_start(), char::is_whitespace, and trim() are used throughout. This is a systemic code issue.                                                                                                                                        |
-| RFC §4.5                     | No test for special characters after slash (e.g., /foo!bar, /@cmd).                                                                                                                                                                                                                                         |*/

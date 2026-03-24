@@ -148,6 +148,54 @@ mod tests {
     }
 
     // =========================================================================
+    // Zero-append finalize (text block boundary at EOF)
+    // RFC §6.1 / Engine Spec §10.3
+    // =========================================================================
+
+    #[test]
+    fn finalize_immediately_after_start() {
+        // RFC §6.1: text block may end on the same line it started (single
+        // logical line before EOF or command trigger).
+        let block = finalize_text(start_text(5, "only line"), 2);
+        assert_eq!(block.id, "text-2");
+        assert_eq!(block.content, "only line");
+        assert_eq!(block.range.start_line, 5);
+        assert_eq!(block.range.end_line, 5);
+    }
+
+    // =========================================================================
+    // All-blank-lines text block
+    // RFC §6.1
+    // =========================================================================
+
+    #[test]
+    fn all_blank_lines_produce_newline_only_content() {
+        // RFC §6.1: blank lines are included verbatim.
+        // Three empty strings joined with "\n" produce "\n\n".
+        let pt = start_text(0, "");
+        let pt = append_text(pt, 1, "");
+        let pt = append_text(pt, 2, "");
+        let block = finalize_text(pt, 0);
+        assert_eq!(block.content, "\n\n");
+    }
+
+    // =========================================================================
+    // Content preservation: verbatim pass-through
+    // RFC §6.1
+    // =========================================================================
+
+    #[test]
+    fn content_with_special_characters_preserved() {
+        // RFC §6.1: text block content preserves lines verbatim.
+        // Backslashes, backticks, and unicode are not interpreted.
+        let pt = start_text(0, "trailing backslash\\");
+        let pt = append_text(pt, 1, "```not a fence```");
+        let pt = append_text(pt, 2, "emoji: 🎉");
+        let block = finalize_text(pt, 0);
+        assert_eq!(block.content, "trailing backslash\\\n```not a fence```\nemoji: 🎉");
+    }
+
+    // =========================================================================
     // Property tests
     // =========================================================================
 

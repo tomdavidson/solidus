@@ -96,43 +96,64 @@ mod tests {
         assert_eq!(cmd.arguments.mode, ArgumentMode::SingleLine);
         assert_eq!(cmd.arguments.fence_lang, None);
     }
-}
 
-// =============================================================================
-// TEST GAPS: spec areas this file's functions touch but are not tested
-// =============================================================================
-//
-// | Spec Section                    | Gap                                             | Severity |
-// |---------------------------------|-------------------------------------------------|----------|
-// | Engine Spec §9.3                | NO WARNINGS VECTOR: finalize_single_line returns| LOW      |
-// |                                 | a Command, not (Command, Vec<Warning>). The     |          |
-// |                                 | fence path returns warnings but single-line      |          |
-// |                                 | cannot produce warnings per spec, so this is     |          |
-// |                                 | correct. However the asymmetric return types     |          |
-// |                                 | between finalize_single_line and finalize_fence  |          |
-// |                                 | should be documented.                            |          |
-// |---------------------------------|-------------------------------------------------|----------|
-// | RFC §7.1                        | RAW FOR JOINED COMMANDS: When a single-line     | MEDIUM   |
-// |                                 | command spans multiple physical lines via         |          |
-// |                                 | backslash joining (RFC Appendix B.2), the raw    |          |
-// |                                 | field should contain all physical lines with      |          |
-// |                                 | backslashes and LF separators. This function     |          |
-// |                                 | accepts raw as a parameter (the caller builds    |          |
-// |                                 | it), so it's not this function's concern, but    |          |
-// |                                 | no test verifies multi-physical-line raw input.  |          |
-// |---------------------------------|-------------------------------------------------|----------|
-// | RFC §7.1                        | RAW WITH LEADING WHITESPACE: No test verifies   | LOW      |
-// |                                 | that raw containing leading whitespace (e.g.,    |          |
-// |                                 | "  /cmd arg") is passed through unmodified.      |          |
-// |---------------------------------|-------------------------------------------------|----------|
-// | Engine Spec §3.4                | ARGUMENT MODE SERIALIZATION: Engine Spec says   | INFO     |
-// |                                 | "String serialization is the SDK's               |          |
-// |                                 | responsibility." The enum value                  |          |
-// |                                 | ArgumentMode::SingleLine is set correctly, but   |          |
-// |                                 | no test confirms the enum variant name maps to   |          |
-// |                                 | "single-line" (SDK concern, not engine).         |          |
-// |---------------------------------|-------------------------------------------------|----------|
-// | (none)                          | NO PROPERTY TESTS: This is a simple mapping      | LOW      |
-// |                                 | function with no branching logic. Property tests  |          |
-// |                                 | would add minimal value, but one could assert    |          |
-// |                                 | payload == header for all inputs.                |          |
+    // =========================================================================
+    // Raw passthrough: leading whitespace and joined lines
+    // RFC §7.1
+    // =========================================================================
+
+    #[test]
+    fn raw_with_leading_whitespace_preserved() {
+        // RFC §7.1: raw is the exact source text including leading whitespace.
+        let h = make_header("cmd", "arg");
+        let cmd = finalize_single_line(h, "  /cmd arg".into(), 0, LineRange { start_line: 0, end_line: 0 });
+        assert_eq!(cmd.raw, "  /cmd arg");
+    }
+
+    #[test]
+    fn raw_with_multi_physical_lines_preserved() {
+        // RFC §7.1 / RFC Appendix B.2: caller builds raw from joined physical
+        // lines. This function must pass it through unmodified.
+        let h = make_header("deploy", "prod --region us-west-2");
+        let raw = "/deploy prod \\\n --region us-west-2".to_string();
+        let cmd = finalize_single_line(h, raw.clone(), 0, LineRange { start_line: 0, end_line: 1 });
+        assert_eq!(cmd.raw, raw);
+        assert_eq!(cmd.range.start_line, 0);
+        assert_eq!(cmd.range.end_line, 1);
+    }
+
+    // =========================================================================
+    // Property tests
+    // =========================================================================
+
+    use proptest::prelude::*;
+
+    proptest! {
+        // RFC §4.4: in single-line mode header and payload are always identical.
+        #[test]
+        #[cfg_attr(feature = "tdd", ignore)]
+        fn payload_always_equals_header(
+            name in "[a-z][a-z0-9]{0,10}",
+            args in "[a-zA-Z0-9 ]{0,50}"
+        ) {
+            let h = make_header(&name, &args);
+            let raw = format!("/{name} {args}");
+            let cmd = finalize_single_line(h, raw, 0, LineRange { start_line: 0, end_line: 0 });
+            prop_assert_eq!(&cmd.arguments.payload, &cmd.arguments.header);
+        }
+
+        // Engine Spec §3.3: fence_lang is always None for single-line commands.
+        #[test]
+        #[cfg_attr(feature = "tdd", ignore)]
+        fn fence_lang_always_none(
+            name in "[a-z][a-z0-9]{0,10}",
+            args in "[a-zA-Z0-9 ]{0,50}"
+        ) {
+            let h = make_header(&name, &args);
+            let raw = format!("/{name} {args}");
+            let cmd = finalize_single_line(h, raw, 0, LineRange { start_line: 0, end_line: 0 });
+            prop_assert_eq!(cmd.arguments.fence_lang, None);
+            prop_assert_eq!(cmd.arguments.mode, ArgumentMode::SingleLine);
+        }
+    }
+}

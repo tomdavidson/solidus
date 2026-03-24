@@ -10,7 +10,7 @@ pub enum FenceResult {
 /// In-progress fenced command being assembled from physical lines.
 ///
 /// Existence of this value means the fence is open. No `is_open` field needed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingFence {
     pub id: usize,
     pub name: String,
@@ -53,8 +53,10 @@ pub fn accept_fence_line(
     }
 }
 
+fn is_wsp(c: char) -> bool { c == ' ' || c == '\t' }
+
 fn is_fence_closer(line: &str, opener_count: usize) -> bool {
-    let trimmed = line.trim();
+    let trimmed = line.trim_matches(is_wsp);
     !trimmed.is_empty() && trimmed.chars().all(|c| c == '`') && trimmed.len() >= opener_count
 }
 
@@ -63,7 +65,7 @@ pub fn finalize_fence(fence: PendingFence, unclosed: bool) -> (Command, Vec<Warn
 
     if unclosed {
         warnings.push(Warning {
-            wtype: "unclosed-fence".to_string(),
+            wtype: "unclosed_fence".to_string(),
             start_line: Some(fence.start_line),
             message: Some(format!("Fenced block opened at line {} was never closed.", fence.start_line)),
         });
@@ -91,7 +93,11 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::{ArgumentMode, LineRange, classify::CommandHeader};
+    use crate::{
+        ArgumentMode, LineRange,
+        classify::CommandHeader,
+        test_helper::{feed_body, valid_command_name},
+    };
 
     // --- Test helpers ---
 
@@ -391,7 +397,7 @@ mod tests {
         // §11 requires "unclosed_fence" (snake_case). See gaps comment below.
         let fence = make_fence("cmd", 3, 4, 0);
         let (_, warnings) = finalize_fence(fence, true);
-        assert_eq!(warnings[0].wtype, "unclosed-fence");
+        assert_eq!(warnings[0].wtype, "unclosed_fence");
         assert_eq!(warnings[0].start_line, Some(4));
         assert!(warnings[0].message.as_deref().unwrap_or("").contains('4'));
     }
@@ -408,13 +414,217 @@ mod tests {
     }
 
     // =========================================================================
-    // Property tests
+    // is_fence_closer — whitespace trimming (Engine Spec §6)
     // =========================================================================
 
-    fn valid_command_name() -> impl Strategy<Value = String> {
-        // RFC §4.1: [a-z]([a-z0-9-]*[a-z0-9])?
-        "[a-z][a-z0-9\\-]{0,15}".prop_filter("no trailing hyphen", |s| !s.ends_with('-'))
+    #[test]
+    fn closer_with_tab_whitespace() {
+        // Engine Spec §6: HTAB is valid whitespace for closer trimming.
+        // RFC §5.2.3: after trimming leading/trailing WSP.
+        let fence = make_fence("cmd", 3, 0, 0);
+        let (_, res) = accept_fence_line(fence, 1, "\t```\t");
+        assert_eq!(res, FenceResult::Completed);
     }
+
+    #[test]
+    fn closer_with_mixed_space_and_tab() {
+        // Engine Spec §6: both SP and HTAB are valid for closer trimming.
+        let fence = make_fence("cmd", 3, 0, 0);
+        let (_, res) = accept_fence_line(fence, 1, " \t ``` \t ");
+        assert_eq!(res, FenceResult::Completed);
+    }
+
+    #[test]
+    fn closer_with_nbsp_is_not_trimmed() {
+        // Engine Spec §6: U+00A0 (NBSP) is NOT whitespace. A line with NBSP
+        // before backticks contains non-backtick chars after spec-trimming,
+        // so it is NOT a valid closer.
+        // NOTE: will FAIL until is_fence_closer uses is_wsp instead of trim().
+        let fence = make_fence("cmd", 3, 0, 0);
+        let (_, res) = accept_fence_line(fence, 1, "\u{00A0}```");
+        assert_eq!(res, FenceResult::Consumed);
+    }
+
+    #[test]
+    fn closer_with_em_space_is_not_trimmed() {
+        // Engine Spec §6: U+2003 (EM SPACE) is NOT whitespace per spec.
+        // NOTE: will FAIL until is_fence_closer uses is_wsp instead of trim().
+        let fence = make_fence("cmd", 3, 0, 0);
+        let (_, res) = accept_fence_line(fence, 1, "\u{2003}```");
+        assert_eq!(res, FenceResult::Consumed);
+    }
+
+    // =========================================================================
+    // is_fence_closer — edge cases
+    // RFC §5.2.3
+    // =========================================================================
+
+    #[test]
+    fn closer_with_leading_text_does_not_close() {
+        // RFC §5.2.3: "consists solely of backtick characters" after trimming.
+        // Leading non-WSP text means it is not solely backticks.
+        let fence = make_fence("cmd", 3, 0, 0);
+        let (_, res) = accept_fence_line(fence, 1, "x```");
+        assert_eq!(res, FenceResult::Consumed);
+    }
+
+    #[test]
+    fn closer_backticks_with_interspersed_space_does_not_close() {
+        // RFC §5.2.3: "solely of backtick characters". Spaces between
+        // backticks means it is not solely backticks after trimming.
+        let fence = make_fence("cmd", 3, 0, 0);
+        let (_, res) = accept_fence_line(fence, 1, "` ` `");
+        assert_eq!(res, FenceResult::Consumed);
+    }
+
+    #[test]
+    fn closer_with_four_backtick_opener_needs_four() {
+        // RFC §5.2.3: closer count must be >= opener count.
+        // Opener is 4, so 3 backticks do NOT close.
+        let fence = make_fence("cmd", 4, 0, 0);
+        let (_, res) = accept_fence_line(fence, 1, "```");
+        assert_eq!(res, FenceResult::Consumed);
+        // But 4 does:
+        let fence2 = make_fence("cmd", 4, 0, 0);
+        let (_, res2) = accept_fence_line(fence2, 1, "````");
+        assert_eq!(res2, FenceResult::Completed);
+    }
+
+    #[test]
+    fn closer_tilde_line_does_not_close() {
+        // RFC §5.2: tilde fences are not recognized. A line of tildes
+        // is not a closer regardless of count.
+        let fence = make_fence("cmd", 3, 0, 0);
+        let (_, res) = accept_fence_line(fence, 1, "~~~");
+        assert_eq!(res, FenceResult::Consumed);
+    }
+
+    // =========================================================================
+    // open_fence — header_text and fence_lang passthrough
+    // Engine Spec §9.1
+    // =========================================================================
+
+    #[test]
+    fn open_fence_preserves_header_text() {
+        // Engine Spec §9.1: header_text from CommandHeader is stored.
+        let raw = "/mcp call_tool write_file ```json".to_string();
+        let header = CommandHeader {
+            raw: raw.clone(),
+            name: "mcp".to_string(),
+            header_text: "call_tool write_file".to_string(),
+            mode: ArgumentMode::Fence,
+            fence_lang: Some("json".to_string()),
+            fence_backtick_count: 3,
+        };
+        let range = LineRange { start_line: 0, end_line: 0 };
+        let fence = open_fence(header, raw, 0, range);
+        assert_eq!(fence.header_text, "call_tool write_file");
+        assert_eq!(fence.fence_lang, Some("json".to_string()));
+    }
+
+    #[test]
+    fn open_fence_range_from_logical_line() {
+        // Engine Spec §9.1 + §3.6: range seeded from the logical line's
+        // physical span. A joined opener spanning lines 2-4 should set both.
+        let raw = "/cmd ```".to_string();
+        let header = CommandHeader {
+            raw: raw.clone(),
+            name: "cmd".to_string(),
+            header_text: String::new(),
+            mode: ArgumentMode::Fence,
+            fence_lang: None,
+            fence_backtick_count: 3,
+        };
+        let range = LineRange { start_line: 2, end_line: 4 };
+        let fence = open_fence(header, raw, 0, range);
+        assert_eq!(fence.start_line, 2);
+        assert_eq!(fence.end_line, 4);
+    }
+
+    // =========================================================================
+    // finalize_fence — warning type string (snake_case)
+    // Engine Spec §11 + §16.3: "unclosed_fence" (snake_case)
+    // =========================================================================
+
+    #[test]
+    fn unclosed_fence_warning_type_is_snake_case() {
+        // Engine Spec §11: warning types use snake_case.
+        // Engine Spec §16.3: migrated from "unclosed-fence" to "unclosed_fence".
+        // NOTE: will FAIL until finalize_fence is updated from "unclosed-fence"
+        // to "unclosed_fence".
+        let fence = make_fence("cmd", 3, 0, 0);
+        let (_, warnings) = finalize_fence(fence, true);
+        assert_eq!(warnings[0].wtype, "unclosed_fence");
+    }
+
+    // =========================================================================
+    // finalize_fence — header passthrough to Command
+    // Engine Spec §3.3
+    // =========================================================================
+
+    #[test]
+    fn finalize_preserves_header_in_command() {
+        // Engine Spec §3.3: CommandArguments.header is the inline argument
+        // text before the fence opener.
+        let raw = "/mcp call_tool ```json".to_string();
+        let header = CommandHeader {
+            raw: raw.clone(),
+            name: "mcp".to_string(),
+            header_text: "call_tool".to_string(),
+            mode: ArgumentMode::Fence,
+            fence_lang: Some("json".to_string()),
+            fence_backtick_count: 3,
+        };
+        let range = LineRange { start_line: 0, end_line: 0 };
+        let fence = open_fence(header, raw, 0, range);
+        let (fence, _) = accept_fence_line(fence, 1, "body");
+        let (fence, _) = accept_fence_line(fence, 2, "```");
+        let (cmd, _) = finalize_fence(fence, false);
+        assert_eq!(cmd.arguments.header, "call_tool");
+    }
+
+    // =========================================================================
+    // finalize_fence — unclosed fence with zero body lines
+    // RFC §5.2.4
+    // =========================================================================
+
+    #[test]
+    fn unclosed_fence_empty_body_produces_warning() {
+        // RFC §5.2.4: unclosed fence at EOF with zero body lines still
+        // produces the warning and an empty payload.
+        let fence = make_fence("cmd", 3, 0, 0);
+        let (cmd, warnings) = finalize_fence(fence, true);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(cmd.arguments.payload, "");
+    }
+
+    // =========================================================================
+    // accept_fence_line — body with backtick content (not a closer)
+    // RFC §5.2.2 / §5.2.3
+    // =========================================================================
+
+    #[test]
+    fn body_line_with_backticks_and_text_is_payload() {
+        // RFC §5.2.3: line must consist SOLELY of backticks to close.
+        // "```\nsome code\n```" but "let x = `template`;" is body.
+        let fence = make_fence("cmd", 3, 0, 0);
+        let (fence, res) = accept_fence_line(fence, 1, "let x = `template`;");
+        assert_eq!(res, FenceResult::Consumed);
+        assert_eq!(fence.payload_lines, vec!["let x = `template`;"]);
+    }
+
+    #[test]
+    fn body_line_with_three_backticks_mid_text_is_payload() {
+        // RFC §5.2.3: the line must be solely backticks after trimming.
+        // "code ``` more" has non-backtick chars, so it is payload.
+        let fence = make_fence("cmd", 3, 0, 0);
+        let (_, res) = accept_fence_line(fence, 1, "code ``` more");
+        assert_eq!(res, FenceResult::Consumed);
+    }
+
+    // =========================================================================
+    // Property tests
+    // =========================================================================
 
     proptest! {
         // Engine Spec §9.3 step 2: raw_lines count = opener + body + closer.
@@ -424,11 +634,7 @@ mod tests {
             name in valid_command_name(),
             body_lines in prop::collection::vec("[a-zA-Z0-9 ]{1,30}", 0..8)
         ) {
-            let fence = make_fence(&name, 3, 0, 0);
-            let fence = body_lines.iter().enumerate().fold(fence, |f, (i, line)| {
-                let (next, _) = accept_fence_line(f, i + 1, line);
-                next
-            });
+            let fence = feed_body(make_fence(&name, 3, 0, 0), &body_lines);
             let (fence, _) = accept_fence_line(fence, body_lines.len() + 1, "```");
             prop_assert_eq!(fence.raw_lines.len(), body_lines.len() + 2);
         }
@@ -441,11 +647,7 @@ mod tests {
             name in valid_command_name(),
             body_lines in prop::collection::vec("[a-zA-Z0-9 ]{1,30}", 0..8)
         ) {
-            let fence = make_fence(&name, 3, 0, 0);
-            let fence = body_lines.iter().enumerate().fold(fence, |f, (i, line)| {
-                let (next, _) = accept_fence_line(f, i + 1, line);
-                next
-            });
+            let fence = feed_body(make_fence(&name, 3, 0, 0), &body_lines);
             let (fence, _) = accept_fence_line(fence, body_lines.len() + 1, "```");
             let no_closer = !fence.payload_lines.iter().any(|l| {
                 let t = l.trim();
@@ -453,6 +655,7 @@ mod tests {
             });
             prop_assert!(no_closer);
         }
+
 
         // RFC §5.2.3: closer count >= opener count always completes.
         #[test]
@@ -475,11 +678,8 @@ mod tests {
             id in 0usize..1000,
             body_lines in prop::collection::vec("[a-zA-Z0-9]{1,20}", 0..5)
         ) {
-            let fence = make_fence(&name, 3, 0, id);
-            let fence = body_lines.iter().enumerate().fold(fence, |f, (i, line)| {
-                let (next, _) = accept_fence_line(f, i + 1, line);
-                next
-            });
+            let fence = feed_body(make_fence(&name, 3, 0, id), &body_lines);
+
             prop_assert_eq!(fence.id, id);
         }
 
@@ -490,11 +690,7 @@ mod tests {
             name in valid_command_name(),
             body_lines in prop::collection::vec("[a-zA-Z0-9 ]{1,30}", 1..8)
         ) {
-            let fence = make_fence(&name, 3, 0, 0);
-            let fence = body_lines.iter().enumerate().fold(fence, |f, (i, line)| {
-                let (next, _) = accept_fence_line(f, i + 1, line);
-                next
-            });
+            let fence = feed_body(make_fence(&name, 3, 0, 0), &body_lines);
             let (fence, _) = accept_fence_line(fence, body_lines.len() + 1, "```");
             let (_, warnings) = finalize_fence(fence, false);
             prop_assert!(warnings.is_empty());
@@ -507,14 +703,10 @@ mod tests {
             name in valid_command_name(),
             body_lines in prop::collection::vec("[a-zA-Z0-9]{1,20}", 1..5)
         ) {
-            let fence = make_fence(&name, 3, 0, 0);
-            let fence = body_lines.iter().enumerate().fold(fence, |f, (i, line)| {
-                let (next, _) = accept_fence_line(f, i + 1, line);
-                next
-            });
+            let fence = feed_body(make_fence(&name, 3, 0, 0), &body_lines);
             let (_, warnings) = finalize_fence(fence, true);
             prop_assert_eq!(warnings.len(), 1);
-            prop_assert_eq!(&warnings[0].wtype, "unclosed-fence");
+            prop_assert_eq!(&warnings[0].wtype, "unclosed_fence");
         }
 
         // RFC §5.2.2: payload = body lines joined with LF, no trailing LF.
@@ -524,11 +716,7 @@ mod tests {
             name in valid_command_name(),
             body_lines in prop::collection::vec("[a-zA-Z0-9 ]{1,20}", 1..8)
         ) {
-            let fence = make_fence(&name, 3, 0, 0);
-            let fence = body_lines.iter().enumerate().fold(fence, |f, (i, line)| {
-                let (next, _) = accept_fence_line(f, i + 1, line);
-                next
-            });
+            let fence = feed_body(make_fence(&name, 3, 0, 0), &body_lines);
             let (fence, _) = accept_fence_line(fence, body_lines.len() + 1, "```");
             let (cmd, _) = finalize_fence(fence, false);
             prop_assert_eq!(cmd.arguments.payload, body_lines.join("\n"));
@@ -541,11 +729,7 @@ mod tests {
             name in valid_command_name(),
             body_lines in prop::collection::vec("[a-zA-Z0-9]{1,20}", 0..6)
         ) {
-            let fence = make_fence(&name, 3, 0, 0);
-            let fence = body_lines.iter().enumerate().fold(fence, |f, (i, line)| {
-                let (next, _) = accept_fence_line(f, i + 1, line);
-                next
-            });
+            let fence = feed_body(make_fence(&name, 3, 0, 0), &body_lines);
             let (fence, _) = accept_fence_line(fence, body_lines.len() + 1, "```");
             let (cmd, _) = finalize_fence(fence, false);
             let expected_newlines = body_lines.len() + 1;
@@ -554,53 +738,25 @@ mod tests {
                 expected_newlines
             );
         }
+
+               // RFC §5.2.3: variable-width opener requires matching closer width.
+       #[test]
+       #[cfg_attr(feature = "tdd", ignore)]
+       fn variable_opener_width_requires_matching_closer(
+           name in valid_command_name(),
+           opener_extra in 0usize..5,
+           closer_extra in 0usize..5,
+       ) {
+           let opener_count = 3 + opener_extra;
+           let closer_count = 3 + closer_extra;
+           let fence = make_fence(&name, opener_count, 0, 0);
+           let closer = "`".repeat(closer_count);
+           let (_, res) = accept_fence_line(fence, 1, &closer);
+           if closer_count >= opener_count {
+               prop_assert_eq!(res, FenceResult::Completed);
+           } else {
+               prop_assert_eq!(res, FenceResult::Consumed);
+           }
+       }
     }
 }
-
-// =============================================================================
-// TEST GAPS: spec areas this file's functions touch but are not tested
-// =============================================================================
-//
-// | Spec Section                      | Gap                                              | Severity |
-// |-----------------------------------|--------------------------------------------------|----------|
-// | Engine Spec §11 / RFC §7.4        | WARNING TYPE STRING: code emits "unclosed-fence"  | CRITICAL |
-// |                                   | (kebab-case) but Engine Spec v0.5.0 requires      |          |
-// |                                   | "unclosed_fence" (snake_case). This is a code bug. |          |
-// |-----------------------------------|--------------------------------------------------|----------|
-// | Engine Spec §6                    | WHITESPACE: is_fence_closer uses .trim() which    | HIGH     |
-// |                                   | strips all Unicode WSP. Engine Spec §6 mandates   |          |
-// |                                   | only SP (U+0020) and HTAB (U+0009). No test       |          |
-// |                                   | verifies that U+00A0 or other exotic WSP around   |          |
-// |                                   | backticks does NOT trigger a close.                |          |
-// |-----------------------------------|--------------------------------------------------|----------|
-// | RFC §5.2.3                        | CLOSER WITH TRAILING BACKSLASH: RFC §5.2.3 notes  | MEDIUM   |
-// |                                   | "If the physical line containing a fence closer    |          |
-// |                                   | ends with a trailing '\', the fence closes          |          |
-// |                                   | normally, and then the '\' triggers a line join."   |          |
-// |                                   | No test for "```\" as a closer line (the backslash |          |
-// |                                   | check is not this module's job, but the closer     |          |
-// |                                   | detection itself should reject "```\").             |          |
-// |-----------------------------------|--------------------------------------------------|----------|
-// | RFC §5.2.3                        | FOUR-BACKTICK OPENER WITH THREE-BACKTICK CLOSER:  | LOW      |
-// |                                   | No test where opener_count=4 and closer has        |          |
-// |                                   | exactly 3 backticks (should NOT close). Only the   |          |
-// |                                   | 3-opener/2-closer case is tested.                  |          |
-// |-----------------------------------|--------------------------------------------------|----------|
-// | RFC §5.2.2                        | PAYLOAD NO TRAILING LF: "The payload MUST NOT     | LOW      |
-// |                                   | include a trailing LF after the last body line."   |          |
-// |                                   | No explicit assertion that payload does not end    |          |
-// |                                   | with \n (implicitly covered by join semantics but  |          |
-// |                                   | not directly asserted).                            |          |
-// |-----------------------------------|--------------------------------------------------|----------|
-// | RFC §5.2.2                        | LINE JOINING IMMUNITY: "Fence body lines are      | LOW      |
-// |                                   | never subject to line joining." This is enforced   |          |
-// |                                   | by the document parser (not this module), but      |          |
-// |                                   | body_preserves_content_verbatim partially covers   |          |
-// |                                   | it by checking trailing backslash survives.        |          |
-// |-----------------------------------|--------------------------------------------------|----------|
-// | Engine Spec §9.2                  | ACCEPT RESULT REJECTED VARIANT: The Engine Spec   | INFO     |
-// |                                   | defines AcceptResult::Rejected for already-closed  |          |
-// |                                   | commands. This file's PendingFence uses            |          |
-// |                                   | ownership-based design (no is_open field), so      |          |
-// |                                   | Rejected is impossible, but the enum mismatch      |          |
-// |                                   | with the spec should be documented.                |          |
