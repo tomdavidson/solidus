@@ -3,17 +3,6 @@
 A Rust + WebAssembly slash command parser. Extracts `/commands` from text with support for
 single-line arguments, multi-line continuation (`/`), and fenced code blocks.
 
-## Architecture
-
-```
-slash-parser-core/   Pure Rust parser — no WASM dependencies
-slash-parser-js/     JS/TS library (wasm-bindgen + TypeScript types)
-slash-parse/         CLI tool — streaming JSONL output
-fuzz/                cargo-fuzz harness
-```
-
-The core crate is the single source of truth. The JS library and CLI are thin consumers.
-
 ## Quick start
 
 Managed by [Moon](https://moonrepo.dev). All tool versions are pinned via `.prototools`.
