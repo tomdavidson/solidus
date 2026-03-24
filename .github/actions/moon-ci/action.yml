@@ -1,5 +1,3 @@
-# .github/actions/moon-ci/action.yml
-#
 # Usage:
 #   - uses: ./.github/actions/moon-ci
 #     with:

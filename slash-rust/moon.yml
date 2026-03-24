@@ -2,9 +2,6 @@ $schema: "https://moonrepo.dev/schemas/project.json"
 language: "rust"
 tags: ["sdk"]
 
-tasks:
-  publish:
-    command: "cargo"
-    args: ["publish", "--allow-dirty"]
-    options:
-      runInCI: false
+workspace:
+  inheritedTasks:
+    include: []
