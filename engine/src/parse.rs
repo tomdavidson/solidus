@@ -94,6 +94,10 @@ fn step_idle(ctx: &mut ParseCtx, joiner: &mut LineJoiner, phys: &[&str]) -> Loop
     let Some(ll) = joiner.next_logical() else {
         return LoopAction::Break;
     };
+
+        // Temporary debug:
+    let classification = classify_line(&ll.text);
+
     match classify_line(&ll.text) {
         LineKind::Command(mut header) => {
             header.raw = phys[ll.first_physical..=ll.last_physical].join("\n");

@@ -6,13 +6,14 @@
 
 #![no_main]
 
-#[cfg(feature = "libfuzzer")]
-use libfuzzer_sys::fuzz_target;
+#[cfg(all(feature = "libfuzzer", feature = "libafl"))]
+compile_error!("Enable exactly one of `libfuzzer` or `libafl`, not both.");
 
 #[cfg(feature = "libafl")]
 use libafl_libfuzzer::fuzz_target;
-
-use solidus_engine::parse_document;
+#[cfg(feature = "libfuzzer")]
+use libfuzzer_sys::fuzz_target;
+use solidus_engine::{ArgumentMode, parse_document};
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(input) = std::str::from_utf8(data) {
@@ -30,5 +31,16 @@ fuzz_target!(|data: &[u8]| {
         for (i, tb) in result.textblocks.iter().enumerate() {
             assert_eq!(tb.id, format!("text-{i}"));
         }
+
+        // §5: every command has a valid argument mode.
+        for cmd in &result.commands {
+            assert!(
+                cmd.arguments.mode == ArgumentMode::SingleLine || cmd.arguments.mode == ArgumentMode::Fence
+            );
+        }
+
+        // §8.4: determinism.
+        let result2 = parse_document(input);
+        assert_eq!(result, result2);
     }
 });

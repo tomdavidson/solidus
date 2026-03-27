@@ -16,14 +16,6 @@ fn replay(path: &Path) -> datatest_stable::Result<()> {
     let input = render_doc(&doc);
     let result = parse_document(&input);
 
-    // in the replay function, before assertions run:
-    eprintln!("fragments (rendered): {:#?}", doc.fragments.iter().take(MAX_FRAGMENTS).collect::<Vec<_>>());
-    eprintln!("rendered input:\n{}", render_doc(&doc));
-    eprintln!("warnings: {:?}", result.warnings);
-    eprintln!("commands: {:#?}", result.commands);
-    eprintln!("textblocks: {:#?}", result.textblocks);
-    eprintln!("physical_lines: {:?}", input.split('\n').collect::<Vec<_>>());
-
     assert!(!result.version.is_empty());
     assert_ids_sequential(&result);
     assert_argument_modes(&result);
