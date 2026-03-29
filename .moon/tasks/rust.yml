@@ -10,24 +10,18 @@ fileGroups:
     - "tests/**/*"
 
 tasks:
-  cargo:
-    command: "cargo"
-    options:
-      runInCI: false
-
-  build: &build
-    command: "cargo build"
+  fetch:
+    command: "cargo fetch"
     inputs:
-      - "@group(cargo)"
-      - "@group(sources)"
-    env: &env
-      CARGO_TERM_COLOR: "always"
+      - "Cargo.toml"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+    env: *env
 
-  build-release:
+  build:
     <<: *build
-    command: "cargo build --release"
-    options:
-      runInCI: false
+    deps:
+      - "~:fetch"
 
   check:
     command: "cargo check --all-targets"
@@ -35,14 +29,8 @@ tasks:
       - "@group(cargo)"
       - "@group(sources)"
       - "@group(tests)"
-    env: *env
-
-  dev:
-    command: "cargo run"
-    inputs:
-      - "@group(cargo)"
-      - "@group(sources)"
-    preset: "server"
+    deps:
+      - "~:fetch"
     env: *env
 
   lint:
@@ -51,14 +39,10 @@ tasks:
       - "@group(cargo)"
       - "@group(sources)"
       - "@group(tests)"
-      - "/clippy.toml"
+      - "/.clippy.toml"
+    deps:
+      - "~:fetch"
     env: *env
-
-  lint-fix:
-    extends: "lint"
-    args: "--fix --allow-dirty --allow-staged"
-    options:
-      runInCI: false
 
   test:
     command: "cargo nextest run --no-fail-fast -p solidus-$project"
@@ -68,18 +52,6 @@ tasks:
       - "@group(tests)"
       - "/.config/nextest.*"
       - "fuzz/regressions/**/*"
-    env: *env
-
-  fmt-check:
-    command: "cargo fmt --check"
-    inputs:
-      - "@group(cargo)"
-      - "@group(sources)"
-    env: *env
-
-  audit:
-    command: "cargo"
-    args: ["deny", "check"]
-    inputs:
-      - "@group(cargo)"
+    deps:
+      - "~:fetch"
     env: *env

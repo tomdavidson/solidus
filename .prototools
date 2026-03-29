@@ -11,3 +11,7 @@ gitleaks = "https://raw.githubusercontent.com/tomdavidson/proto/refs/heads/main/
 shellcheck = "https://raw.githubusercontent.com/tomdavidson/proto/refs/heads/main/plugins/shellcheck/plugin.toml"
 shfmt = "https://raw.githubusercontent.com/tomdavidson/proto/refs/heads/main/plugins/shfmt/plugin.toml"
 watchexec = "https://raw.githubusercontent.com/tomdavidson/proto/refs/heads/main/plugins/watchexec/plugin.toml"
+tuckr = "https://raw.githubusercontent.com/tomdavidson/proto/refs/heads/main/plugins/tuckr/plugin.toml"
+dasel = "https://raw.githubusercontent.com/tomdavidson/proto/refs/heads/main/plugins/dasel/plugin.toml"
+tera = "https://raw.githubusercontent.com/tomdavidson/proto/refs/heads/main/plugins/tera/plugin.toml"
+inko = "https://raw.githubusercontent.com/tomdavidson/proto/refs/heads/main/plugins/lnko/plugin.toml"
